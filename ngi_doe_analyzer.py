@@ -267,38 +267,103 @@ class DoEProject:
                         for i in range(len(df))]
         return df
 
+    def get_safe_names(self):
+        """Faktör adlarını model-güvenli isimlere çevir"""
+        return [f"X{i+1}" for i in range(len(self.factors))]
+
+    def get_coded_df(self):
+        """Coded değerler (-1/+1) üzerinden model DataFrame döndür"""
+        df = self.design_matrix
+        if df is None: return None, []
+        safe_names = self.get_safe_names()
+        # Coded sütunları al (varsa), yoksa actual'dan hesapla
+        coded_cols = {}
+        for i, f in enumerate(self.factors):
+            sn = safe_names[i]
+            coded_col = f["name"] + "_coded"
+            if coded_col in df.columns:
+                coded_cols[sn] = df[coded_col].values
+            elif f["type"] == "continuous" and f["high"] != f["low"]:
+                actual = df[f["name"]].values
+                coded = 2 * (actual - f["low"]) / (f["high"] - f["low"]) - 1
+                coded_cols[sn] = coded
+            else:
+                coded_cols[sn] = df[f["name"]].values
+        base_df = pd.DataFrame(coded_cols)
+        return base_df, safe_names
+
     def fit_models(self):
-        """Tüm yanıtlar için OLS model fit et"""
-        df = self.build_response_table()
-        if df is None: return
-        factor_names = self.get_factor_names()
-        # coded değişken isimleri (boşluk → _)
-        safe_names = [n.replace(" ","_").replace("-","_") for n in factor_names]
-        rename = {n: s for n, s in zip(factor_names, safe_names)}
-        df = df.rename(columns=rename)
+        """Tüm yanıtlar için OLS model fit et (coded değerler üzerinden)"""
+        base_df, safe_names = self.get_coded_df()
+        if base_df is None: return
         self.model_results = {}
+        self.model_errors = {}
         for resp in self.responses:
-            sub = df[safe_names + [resp]].dropna()
-            if len(sub) < len(safe_names) + 1: continue
+            # Yanıt değerlerini ekle
+            y_vals = [self.run_results.get(i, {}).get(resp, np.nan)
+                      for i in range(len(base_df))]
+            sub = base_df.copy()
+            sub[resp] = y_vals
+            sub = sub.dropna()
+            n_needed = len(safe_names) + 2
+            if len(sub) < n_needed:
+                self.model_errors[resp] = f"Yetersiz veri: {len(sub)} run, en az {n_needed} gerekli"
+                continue
             try:
-                # İnteraksiyon terimleri ekle
                 terms = safe_names[:]
                 # 2-yönlü interaksiyonlar
                 for a, b in itertools.combinations(safe_names, 2):
                     col = f"{a}_x_{b}"
                     sub[col] = sub[a] * sub[b]
                     terms.append(col)
-                # CCD/BBD için quadratic terimler
+                # CCD/BBD quadratic terimler
                 if self.design_type in ["Central Composite (CCD/RSM)", "Box-Behnken (BBD)"]:
                     for a in safe_names:
                         col = f"{a}_sq"
                         sub[col] = sub[a] ** 2
                         terms.append(col)
+                # Multicollinearity veya rank sorununa karşı: sadece anlamlı terimleri tut
                 formula = f"{resp} ~ " + " + ".join(terms)
                 model = ols(formula, data=sub).fit()
                 self.model_results[resp] = model
             except Exception as e:
+                self.model_errors[resp] = str(e)
                 print(f"Model fit error ({resp}): {e}")
+
+    def predict_at(self, resp, factor_actual_values):
+        """Verilen actual faktör değerlerinde tahmin yap"""
+        model = self.model_results.get(resp)
+        if not model: return None, None
+        safe_names = self.get_safe_names()
+        row = {}
+        for i, f in enumerate(self.factors):
+            sn = safe_names[i]
+            actual = factor_actual_values[i]
+            if f["type"] == "continuous" and f["high"] != f["low"]:
+                coded = 2 * (actual - f["low"]) / (f["high"] - f["low"]) - 1
+            else:
+                coded = actual
+            row[sn] = coded
+        for a, b in itertools.combinations(safe_names, 2):
+            row[f"{a}_x_{b}"] = row[a] * row[b]
+        if self.design_type in ["Central Composite (CCD/RSM)", "Box-Behnken (BBD)"]:
+            for a in safe_names:
+                row[f"{a}_sq"] = row[a] ** 2
+        pred_df = pd.DataFrame([row])
+        try:
+            pred = float(model.predict(pred_df).iloc[0])
+            # %95 güven aralığı
+            try:
+                pi = model.get_prediction(pred_df).summary_frame(alpha=0.05)
+                lo = float(pi["obs_ci_lower"].iloc[0])
+                hi = float(pi["obs_ci_upper"].iloc[0])
+            except:
+                se = float(np.sqrt(model.mse_resid)) if model.mse_resid else 0
+                lo, hi = pred - 1.96*se, pred + 1.96*se
+            return pred, (lo, hi)
+        except Exception as e:
+            print(f"Predict error ({resp}): {e}")
+            return None, None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1000,15 +1065,34 @@ class Tab3_Analysis(QWidget):
             self.combo_resp.addItem(RESPONSE_LABELS.get(r, r), r)
 
     def _fit(self):
+        if self.project.design_matrix is None:
+            QMessageBox.warning(self,"","Önce tasarım matrisi oluşturun."); return
+        # Yanıt verisi var mı kontrol et
+        has_data = any(
+            self.project.run_results.get(i, {})
+            for i in range(len(self.project.design_matrix))
+        )
+        if not has_data:
+            QMessageBox.warning(self,"","Tasarım Matrisi sekmesinden yanıt değerlerini girin."); return
         self.project.fit_models()
-        self._show_selected()
+        errors = getattr(self.project, 'model_errors', {})
+        if errors:
+            msg = "\n".join([f"  {k}: {v}" for k,v in errors.items()])
+            QMessageBox.warning(self, "Model Uyarıları",
+                f"Bazı modeller fit edilemedi:\n{msg}\n\nVeri girişini kontrol edin.")
+        if self.project.model_results:
+            self._show_selected()
+            QMessageBox.information(self, "✔ Model Fit",
+                f"{len(self.project.model_results)} model başarıyla fit edildi.")
 
     def _show_selected(self):
         key = self.combo_resp.currentData()
         if not key: return
         model = self.project.model_results.get(key)
+        err = getattr(self.project, 'model_errors', {}).get(key)
         if not model:
-            self.txt_summary.setText("Model henüz fit edilmedi. '▶ Model Fit' butonuna basın.")
+            msg = err if err else "Model henüz fit edilmedi. '▶ Model Fit' butonuna basın."
+            self.txt_summary.setText(msg)
             self.anova_table.setRowCount(0)
             self.fig_analysis.clear(); self.canvas_analysis.draw(); return
 
@@ -1016,33 +1100,41 @@ class Tab3_Analysis(QWidget):
         try:
             anova = anova_lm(model, typ=2)
             self._fill_anova(anova)
-        except: pass
+        except Exception as e:
+            print(f"ANOVA error: {e}")
 
         # Özet
-        r2 = model.rsquared; r2a = model.rsquared_adj; rmse = np.sqrt(model.mse_resid)
-        self.txt_summary.setText(
-            f"R²       = {r2:.4f}\n"
-            f"Adj R²   = {r2a:.4f}\n"
-            f"RMSE     = {rmse:.4f}\n"
-            f"N        = {int(model.nobs)}\n"
-            f"F-stat   = {model.fvalue:.3f}  (p={model.f_pvalue:.4f})\n"
-            f"AIC      = {model.aic:.2f}\n"
-            f"BIC      = {model.bic:.2f}"
-        )
+        try:
+            r2 = model.rsquared; r2a = model.rsquared_adj
+            rmse = float(np.sqrt(model.mse_resid)) if model.mse_resid else 0
+            self.txt_summary.setText(
+                f"R²       = {r2:.4f}\n"
+                f"Adj R²   = {r2a:.4f}\n"
+                f"RMSE     = {rmse:.4f}\n"
+                f"N        = {int(model.nobs)}\n"
+                f"F-stat   = {model.fvalue:.3f}  (p={model.f_pvalue:.4f})\n"
+                f"AIC      = {model.aic:.2f}\n"
+                f"BIC      = {model.bic:.2f}"
+            )
+        except Exception as e:
+            self.txt_summary.setText(f"Özet hatası: {e}")
 
         # Grafikler
-        self.fig_analysis.clear()
-        axes = self.fig_analysis.subplots(2, 2)
-        self._plot_pareto(axes[0,0], model)
-        self._plot_pred_actual(axes[0,1], model)
-        self._plot_residuals_normal(axes[1,0], model)
-        self._plot_residuals_fitted(axes[1,1], model)
-        for ax in axes.flat:
-            ax.set_facecolor("#0e1525")
-            ax.tick_params(colors=TXT2, labelsize=8)
-            for sp in ax.spines.values(): sp.set_color("#2a4060")
-        self.fig_analysis.patch.set_facecolor(BG2)
-        self.canvas_analysis.draw()
+        try:
+            self.fig_analysis.clear()
+            axes = self.fig_analysis.subplots(2, 2)
+            self._plot_pareto(axes[0,0], model)
+            self._plot_pred_actual(axes[0,1], model)
+            self._plot_residuals_normal(axes[1,0], model)
+            self._plot_residuals_fitted(axes[1,1], model)
+            for ax in axes.flat:
+                ax.set_facecolor("#0e1525")
+                ax.tick_params(colors=TXT2, labelsize=8)
+                for sp in ax.spines.values(): sp.set_color("#2a4060")
+            self.fig_analysis.patch.set_facecolor(BG2)
+            self.canvas_analysis.draw()
+        except Exception as e:
+            print(f"Plot error: {e}")
 
     def _fill_anova(self, anova):
         self.anova_table.setRowCount(len(anova))
@@ -1210,27 +1302,24 @@ class Tab4_Surface(QWidget):
 
         # Tahmin için DataFrame oluştur
         safe = {f["name"].replace(" ","_").replace("-","_"): f["name"] for f in self.project.factors}
-        rows = []
+        # predict_at kullanarak tutarlı tahmin yap
+        ZZ_flat = []
         for xi, yi in zip(XX.ravel(), YY.ravel()):
-            row = {}
+            actual_vals = []
             for f in self.project.factors:
-                sn = f["name"].replace(" ","_").replace("-","_")
-                if f["name"] == x_name: row[sn] = xi
-                elif f["name"] == y_name: row[sn] = yi
+                if f["name"] == x_name:
+                    actual_vals.append(xi)
+                elif f["name"] == y_name:
+                    actual_vals.append(yi)
                 elif f["name"] in self.fixed_widgets:
-                    row[sn] = self.fixed_widgets[f["name"]].value()
-                else: row[sn] = (f["low"]+f["high"])/2
-            # İnteraksiyon ve quadratic
-            safe_names = list(safe.keys())
-            for a,b in itertools.combinations(safe_names,2):
-                row[f"{a}_x_{b}"] = row[a]*row[b]
-            if self.project.design_type in ["Central Composite (CCD/RSM)","Box-Behnken (BBD)"]:
-                for a in safe_names: row[f"{a}_sq"] = row[a]**2
-            rows.append(row)
+                    actual_vals.append(self.fixed_widgets[f["name"]].value())
+                else:
+                    actual_vals.append((f["low"]+f["high"])/2)
+            pred, _ = self.project.predict_at(resp_key, actual_vals)
+            ZZ_flat.append(pred if pred is not None else float('nan'))
 
-        pred_df = pd.DataFrame(rows)
         try:
-            ZZ = model.predict(pred_df).values.reshape(n,n)
+            ZZ = np.array(ZZ_flat).reshape(n, n)
         except Exception as e:
             QMessageBox.critical(self,"Tahmin Hatası",str(e)); return
 
@@ -1335,88 +1424,108 @@ class Tab5_Optimization(QWidget):
 
     def _optimize(self):
         if not self.project.model_results:
-            QMessageBox.warning(self,"","Önce model fit edin."); return
+            QMessageBox.warning(self,"","Önce Analiz sekmesinden 'Model Fit' yapın."); return
 
         from scipy.optimize import differential_evolution
-        factors = [f for f in self.project.factors if f["type"]=="continuous"]
-        if not factors:
-            QMessageBox.warning(self,"","Sürekli faktör yok."); return
 
-        bounds = [(f["low"], f["high"]) for f in factors]
-        safe_names = [f["name"].replace(" ","_").replace("-","_") for f in factors]
+        # Sadece sürekli faktörler optimize edilir
+        all_factors = self.project.factors
+        cont_idx = [i for i,f in enumerate(all_factors) if f["type"]=="continuous"]
+        if not cont_idx:
+            QMessageBox.warning(self,"","Optimize edilecek sürekli faktör yok."); return
 
-        def desirability(x):
-            row = {sn: xi for sn, xi in zip(safe_names, x)}
-            for a,b in itertools.combinations(safe_names,2):
-                row[f"{a}_x_{b}"] = row[a]*row[b]
-            if self.project.design_type in ["Central Composite (CCD/RSM)","Box-Behnken (BBD)"]:
-                for a in safe_names: row[f"{a}_sq"] = row[a]**2
-            pred_df = pd.DataFrame([row])
+        cont_factors = [all_factors[i] for i in cont_idx]
+        bounds = [(f["low"], f["high"]) for f in cont_factors]
+
+        # Yanıt aralıklarını önceden hesapla (desirability için)
+        resp_ranges = {}
+        df2 = self.project.build_response_table()
+        for resp in self.project.responses:
+            if df2 is not None and resp in df2.columns:
+                col_vals = df2[resp].dropna()
+                if len(col_vals) >= 2:
+                    resp_ranges[resp] = (float(col_vals.min()), float(col_vals.max()))
+
+        def desirability(x_cont):
+            # Tüm faktörler için actual değer listesi oluştur
+            actual_vals = []
+            cont_ptr = 0
+            for i, f in enumerate(all_factors):
+                if i in cont_idx:
+                    actual_vals.append(x_cont[cont_ptr])
+                    cont_ptr += 1
+                else:
+                    actual_vals.append((f["low"] + f["high"]) / 2)
+
             d_vals = []
             for resp, info in self.tgt_rows.items():
-                model = self.project.model_results.get(resp)
-                if not model: continue
-                try: pred = float(model.predict(pred_df).iloc[0])
-                except: continue
+                if resp not in self.project.model_results: continue
+                pred, _ = self.project.predict_at(resp, actual_vals)
+                if pred is None: continue
                 goal = info["combo"].currentText()
-                # Desirability hesapla
-                df2 = self.project.build_response_table()
-                if df2 is not None and resp in df2.columns:
-                    col_vals = df2[resp].dropna()
-                    lo, hi = col_vals.min(), col_vals.max()
-                else: lo, hi = -1e9, 1e9
-                if hi == lo: d = 1.0
-                elif goal == "Minimize Et":
-                    d = max(0, (hi - pred) / (hi - lo))
+                lo, hi = resp_ranges.get(resp, (pred-1, pred+1))
+                span = hi - lo if hi != lo else 1.0
+                if goal == "Minimize Et":
+                    d = max(0.0, min(1.0, (hi - pred) / span))
                 elif goal == "Maximize Et":
-                    d = max(0, (pred - lo) / (hi - lo))
+                    d = max(0.0, min(1.0, (pred - lo) / span))
                 else:  # Hedefe Ulaş
                     t = info["target"].value()
-                    d = max(0, 1 - abs(pred - t) / max(abs(hi-lo), 1e-9))
+                    d = max(0.0, 1.0 - abs(pred - t) / span)
                 d_vals.append(d)
             if not d_vals: return 1.0
-            overall = np.prod(d_vals) ** (1/len(d_vals))
-            return -overall  # minimize → en yüksek desirability
+            return -(np.prod(d_vals) ** (1.0 / len(d_vals)))
 
         try:
-            result = differential_evolution(desirability, bounds, seed=42,
-                                            maxiter=500, tol=1e-6, polish=True)
+            result = differential_evolution(
+                desirability, bounds, seed=42,
+                maxiter=800, tol=1e-7, polish=True,
+                popsize=15, mutation=(0.5, 1.5), recombination=0.7
+            )
             x_opt = result.x
             d_opt = -result.fun
         except Exception as e:
-            QMessageBox.critical(self,"Optimizasyon Hatası",str(e)); return
+            QMessageBox.critical(self,"Optimizasyon Hatası", str(e)); return
 
-        # Sonuçları göster
-        row = {sn: xi for sn, xi in zip(safe_names, x_opt)}
-        for a,b in itertools.combinations(safe_names,2):
-            row[f"{a}_x_{b}"] = row[a]*row[b]
-        if self.project.design_type in ["Central Composite (CCD/RSM)","Box-Behnken (BBD)"]:
-            for a in safe_names: row[f"{a}_sq"] = row[a]**2
-        pred_df = pd.DataFrame([row])
+        # Tüm faktörler için actual değer listesi
+        actual_opt = []
+        cont_ptr = 0
+        for i, f in enumerate(all_factors):
+            if i in cont_idx:
+                actual_opt.append(x_opt[cont_ptr]); cont_ptr += 1
+            else:
+                actual_opt.append((f["low"] + f["high"]) / 2)
 
-        lines = [f"{'─'*50}", "  OPTİMUM FORMÜLASYON ÖNERİSİ", f"{'─'*50}", ""]
-        lines.append("  FAKTÖR DEĞERLERİ:")
-        for f, xi in zip(factors, x_opt):
+        # Sonuç metni
+        lines = [
+            "─" * 52,
+            "   OPTİMUM FORMÜLASYON ÖNERİSİ",
+            "─" * 52, "",
+            "  FAKTÖR DEĞERLERİ:"
+        ]
+        for i, f in enumerate(all_factors):
             unit = f"  {f['unit']}" if f.get("unit") else ""
-            lines.append(f"    {f['name']:25s} = {xi:.4f}{unit}")
-        lines.append("")
-        lines.append("  TAHMİN EDİLEN YANIT DEĞERLERİ:")
+            lines.append(f"    {f['name']:28s} = {actual_opt[i]:.4f}{unit}")
+
+        lines += ["", "  TAHMİN EDİLEN YANIT DEĞERLERİ:"]
         for resp in self.project.responses:
-            model = self.project.model_results.get(resp)
-            if not model: continue
-            try:
-                pred = float(model.predict(pred_df).iloc[0])
-                # %95 PI
-                pred_res = model.get_prediction(pred_df)
-                pi = pred_res.conf_int(obs=True, alpha=0.05)
-                lo_pi, hi_pi = float(pi.iloc[0,0]), float(pi.iloc[0,1])
-                lines.append(f"    {RESPONSE_LABELS.get(resp,resp):30s} = {pred:.4f}  "
-                              f"[%95 PI: {lo_pi:.4f} – {hi_pi:.4f}]")
-            except:
-                lines.append(f"    {RESPONSE_LABELS.get(resp,resp):30s} = (tahmin hatası)")
-        lines.append("")
-        lines.append(f"  Genel Desirability = {d_opt:.4f}")
-        lines.append(f"{'─'*50}")
+            lbl = RESPONSE_LABELS.get(resp, resp)
+            if resp not in self.project.model_results:
+                lines.append(f"    {lbl:32s} = (model yok)")
+                continue
+            pred, ci = self.project.predict_at(resp, actual_opt)
+            if pred is None:
+                lines.append(f"    {lbl:32s} = (tahmin hatası)")
+            else:
+                ci_str = f"  [%95 PI: {ci[0]:.4f} – {ci[1]:.4f}]" if ci else ""
+                lines.append(f"    {lbl:32s} = {pred:.4f}{ci_str}")
+
+        lines += [
+            "",
+            f"  Genel Desirability  = {d_opt:.4f}  "
+            f"({'Mükemmel' if d_opt>0.8 else 'İyi' if d_opt>0.6 else 'Kabul Edilebilir' if d_opt>0.4 else 'Zayıf'})",
+            "─" * 52
+        ]
         self.txt_opt_result.setText("\n".join(lines))
 
 
