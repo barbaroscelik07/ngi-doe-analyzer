@@ -39,6 +39,14 @@ def resource_path(rel):
             sys.executable if getattr(sys,'frozen',False) else __file__)))
     return os.path.join(base, rel)
 
+def tr2ascii(text):
+    """PDF fontunda olmayan Türkçe karakterleri ASCII karşılığına çevir"""
+    tr_map = str.maketrans(
+        "çğıöşüÇĞİÖŞÜ",
+        "cgiosuCGIOSU"
+    )
+    return str(text).translate(tr_map)
+
 # ─── Renkler & Stiller ────────────────────────────────────────────────────────
 BG    = "#0e1219"
 BG2   = "#141824"
@@ -1205,8 +1213,16 @@ class Tab3_Analysis(QWidget):
         except Exception as e:
             print(f"ANOVA error: {e}")
         try:
-            r2 = model.rsquared; r2a = model.rsquared_adj
+            r2   = model.rsquared
+            r2a  = model.rsquared_adj
             rmse = float(np.sqrt(model.mse_resid)) if model.mse_resid else 0
+            # Overfit uyarısı
+            overfit_warn = ""
+            if r2 >= 0.9999 or rmse < 1e-6:
+                overfit_warn = (
+                    "\n\n⚠ UYARI: Model asiri fit olmus olabilir!\n"
+                    "   R2=1.0 ve RMSE=0 anlamli degil.\n"
+                    "   Run sayisini artirin veya terim sayisini azaltin.")
             self.txt_summary.setText(
                 f"R²       = {r2:.4f}\n"
                 f"Adj R²   = {r2a:.4f}\n"
@@ -1214,7 +1230,8 @@ class Tab3_Analysis(QWidget):
                 f"N        = {int(model.nobs)}\n"
                 f"F-stat   = {model.fvalue:.3f}  (p={model.f_pvalue:.4f})\n"
                 f"AIC      = {model.aic:.2f}\n"
-                f"BIC      = {model.bic:.2f}")
+                f"BIC      = {model.bic:.2f}"
+                + overfit_warn)
         except Exception as e:
             self.txt_summary.setText(f"Özet hatası: {e}")
         try:
@@ -2022,19 +2039,25 @@ class DoEApp(QMainWindow):
         from reportlab.pdfbase.ttfonts import TTFont
         import io
 
-        # Font kayıt
+        # Font kayıt — önce exe yanındaki font, sonra sistem fontu
         TR  = "Helvetica"
         TRB = "Helvetica-Bold"
         TRM = "Courier"
-        for fname, fpath in [
+        font_search = [
+            ("DV",  resource_path("DejaVuSans.ttf")),
             ("DV",  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            ("DVB", resource_path("DejaVuSans-Bold.ttf")),
             ("DVB", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        ]:
+        ]
+        registered = set()
+        for fname, fpath in font_search:
+            if fname in registered: continue
             try:
                 if os.path.exists(fpath):
                     pdfmetrics.registerFont(TTFont(fname, fpath))
-                    if fname == "DV":  TR  = "DV"
-                    else:              TRB = "DVB"; TRM = "DV"
+                    registered.add(fname)
+                    if fname == "DV":  TR = "DV"; TRM = "DV"
+                    else:              TRB = "DVB"
             except: pass
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2065,10 +2088,10 @@ class DoEApp(QMainWindow):
                                textColor=BK, leading=11)
 
         def C(txt):
-            return Paragraph(str(txt), ParagraphStyle(
+            return Paragraph(tr2ascii(str(txt)), ParagraphStyle(
                 "c", fontName=TR, fontSize=8, textColor=BK, leading=10))
         def CB(txt):
-            return Paragraph(str(txt), ParagraphStyle(
+            return Paragraph(tr2ascii(str(txt)), ParagraphStyle(
                 "cb", fontName=TRB, fontSize=8, textColor=BK, leading=10))
 
         def tbl(data, col_widths, has_header=True):
@@ -2094,7 +2117,7 @@ class DoEApp(QMainWindow):
         p = self.project
 
         # ── Başlık ───────────────────────────────────────────────────────────
-        story.append(Paragraph("NGI DoE Analiz Raporu", s_h1))
+        story.append(Paragraph(tr2ascii("NGI DoE Analiz Raporu"), s_h1))
         story.append(HRFlowable(width="100%", thickness=1.5, color=BK))
         story.append(Spacer(1, 0.3*cm))
 
@@ -2236,19 +2259,32 @@ class DoEApp(QMainWindow):
             (self.tab6.fig,          "Tasarim Uzayi",
              self.tab6.canvas),
         ]:
+            title_ascii = tr2ascii(title)
+            # Grafik boş mu kontrol et
+            if not fig_obj.get_axes():
+                story.append(KeepTogether([
+                    Paragraph(title_ascii, s_h3),
+                    Paragraph(
+                        tr2ascii("Bu grafik henuz olusturulmadi. "
+                                 "Ilgili sekmeye gidip grafigi cizin."),
+                        s_body),
+                    Spacer(1, 0.3*cm)
+                ]))
+                continue
+
+            # Arka planı beyaza çevir
+            orig_fc = fig_obj.get_facecolor()
+            ax_states = []
             try:
-                # Arka planı beyaza çevir, tüm renkleri siyahlaştır
-                orig_fc = fig_obj.get_facecolor()
                 fig_obj.set_facecolor("white")
-                ax_states = []
                 for ax in fig_obj.get_axes():
                     ax_states.append({
-                        "fc":   ax.get_facecolor(),
-                        "tc":   [(sp, sp.get_color())
-                                 for sp in ax.spines.values()],
-                        "xlc":  ax.xaxis.label.get_color(),
-                        "ylc":  ax.yaxis.label.get_color(),
-                        "ttc":  ax.title.get_color(),
+                        "fc":  ax.get_facecolor(),
+                        "tc":  [(sp, sp.get_color())
+                                for sp in ax.spines.values()],
+                        "xlc": ax.xaxis.label.get_color(),
+                        "ylc": ax.yaxis.label.get_color(),
+                        "ttc": ax.title.get_color(),
                     })
                     ax.set_facecolor("white")
                     for sp in ax.spines.values():
@@ -2261,29 +2297,33 @@ class DoEApp(QMainWindow):
                 buf = io.BytesIO()
                 fig_obj.savefig(buf, format="png", dpi=150,
                                facecolor="white", bbox_inches="tight")
-
-                # Orijinal temaya geri döndür
-                fig_obj.set_facecolor(orig_fc)
-                for ax, state in zip(fig_obj.get_axes(), ax_states):
-                    ax.set_facecolor(state["fc"])
-                    for sp, col in state["tc"]:
-                        sp.set_color(col)
-                    ax.tick_params(colors=TXT2)
-                    ax.xaxis.label.set_color(state["xlc"])
-                    ax.yaxis.label.set_color(state["ylc"])
-                    ax.title.set_color(state["ttc"])
-                try: canvas_obj.draw()
-                except: pass
-
                 buf.seek(0)
                 img = RLImage(buf, width=16*cm, height=10*cm)
                 story.append(KeepTogether([
-                    Paragraph(title, s_h3),
+                    Paragraph(title_ascii, s_h3),
                     img,
                     Spacer(1, 0.4*cm)
                 ]))
             except Exception as e:
-                print(f"Grafik PDF hatasi ({title}): {e}")
+                story.append(KeepTogether([
+                    Paragraph(title_ascii, s_h3),
+                    Paragraph(tr2ascii(f"Grafik kaydedilemedi: {e}"), s_body),
+                    Spacer(1, 0.3*cm)
+                ]))
+            finally:
+                # Orijinal temaya her koşulda geri döndür
+                try:
+                    fig_obj.set_facecolor(orig_fc)
+                    for ax, state in zip(fig_obj.get_axes(), ax_states):
+                        ax.set_facecolor(state["fc"])
+                        for sp, col in state["tc"]:
+                            sp.set_color(col)
+                        ax.tick_params(colors=TXT2)
+                        ax.xaxis.label.set_color(state["xlc"])
+                        ax.yaxis.label.set_color(state["ylc"])
+                        ax.title.set_color(state["ttc"])
+                    canvas_obj.draw()
+                except: pass
 
         try:
             doc.build(story)
