@@ -723,11 +723,14 @@ class Tab1_Factors(QWidget):
         # Run numarası ekle
         df.insert(0, "Run", range(1, len(df)+1))
 
-        # Projeye kaydet
-        self.project.factors = factors
-        self.project.responses = responses
-        self.project.design_type = design
+        # Projeye kaydet — önce eski hesaplama verilerini temizle
+        self.project.factors       = factors
+        self.project.responses     = responses
+        self.project.design_type   = design
         self.project.design_matrix = df
+        self.project.run_results   = {}
+        self.project.model_results = {}
+        self.project.model_errors  = {}
         self.project.product  = self.e_product.text()
         self.project.batch    = self.e_batch.text()
         self.project.analyst  = self.e_analyst.text()
@@ -1060,6 +1063,13 @@ class Tab3_Analysis(QWidget):
         lay.addWidget(spl, 1)
 
     def refresh(self):
+        try:
+            self.fig_analysis.clear()
+            self.canvas_analysis.draw()
+            self.anova_table.setRowCount(0)
+            self.txt_summary.clear()
+        except Exception as e:
+            print(f"Tab3 figure clear error: {e}")
         self.combo_resp.clear()
         for r in self.project.responses:
             self.combo_resp.addItem(RESPONSE_LABELS.get(r, r), r)
@@ -1243,17 +1253,26 @@ class Tab4_Surface(QWidget):
         lay.addWidget(self.canvas_surf, 1)
 
     def refresh(self):
-        self.combo_resp.clear()
-        self.combo_x.clear(); self.combo_y.clear()
-        for r in self.project.responses:
-            self.combo_resp.addItem(RESPONSE_LABELS.get(r,r), r)
-        for f in self.project.factors:
-            if f["type"] == "continuous":
-                self.combo_x.addItem(f["name"])
-                self.combo_y.addItem(f["name"])
-        if self.combo_y.count() > 1:
-            self.combo_y.setCurrentIndex(1)
-        self._update_fixed()
+        try:
+            # Grafikleri temizle
+            self.fig_surf.clear()
+            self.canvas_surf.draw()
+            # Combo kutularını temizle
+            self.combo_resp.clear()
+            self.combo_x.clear()
+            self.combo_y.clear()
+            self.fixed_widgets.clear()
+            for r in self.project.responses:
+                self.combo_resp.addItem(RESPONSE_LABELS.get(r,r), r)
+            for f in self.project.factors:
+                if f["type"] == "continuous":
+                    self.combo_x.addItem(f["name"])
+                    self.combo_y.addItem(f["name"])
+            if self.combo_y.count() > 1:
+                self.combo_y.setCurrentIndex(1)
+            self._update_fixed()
+        except Exception as e:
+            print(f"Tab4 refresh error: {e}")
 
     def _update_fixed(self):
         # Sabit faktör spinbox'larını güncelle
@@ -1402,8 +1421,14 @@ class Tab5_Optimization(QWidget):
         lay.addWidget(res_card, 1)
 
     def refresh(self):
-        for w in self.tgt_rows.values(): w.setParent(None)
+        try:
+            for info in self.tgt_rows.values():
+                w = info.get("widget")
+                if w: w.setParent(None)
+        except Exception as e:
+            print(f"Tab5 clear error: {e}")
         self.tgt_rows.clear()
+        self.txt_opt_result.clear()
         for resp in self.project.responses:
             row = QWidget(); row.setStyleSheet("background:transparent;")
             rl = QHBoxLayout(row); rl.setContentsMargins(0,0,0,0); rl.setSpacing(8)
@@ -1593,10 +1618,11 @@ class DoEApp(QMainWindow):
         self.tabs.addTab(self.tab5, "5 · Optimizasyon")
 
     def refresh_all_tabs(self):
-        self.tab2.refresh()
-        self.tab3.refresh()
-        self.tab4.refresh()
-        self.tab5.refresh()
+        for tab in [self.tab2, self.tab3, self.tab4, self.tab5]:
+            try:
+                tab.refresh()
+            except Exception as e:
+                print(f"Tab refresh error ({tab.__class__.__name__}): {e}")
 
 
 if __name__ == "__main__":
