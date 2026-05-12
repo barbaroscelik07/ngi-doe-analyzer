@@ -1,0 +1,47 @@
+name: NGI DoE Analyzer Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Python Kurulumu
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Kutuphanelerin Kurulmasi
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install PyQt6
+        pip install numpy
+        pip install scipy
+        pip install pandas
+        pip install matplotlib
+        pip install statsmodels
+        pip install pyDOE3
+        pip install reportlab
+        pip install pillow
+
+    - name: EXE Olusturma
+      run: |
+        python -m PyInstaller --onefile --noconsole ^
+          --icon=doe_icon.ico ^
+          --name="NGI_DoE_Analyzer" ^
+          --add-data "doe_icon.ico;."
+      shell: cmd
+
+    - name: EXE Dosyasini Yukle
+      uses: actions/upload-artifact@v4
+      with:
+        name: NGI_DoE_Analyzer
+        path: dist/NGI_DoE_Analyzer.exe
+        retention-days: 30
