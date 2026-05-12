@@ -554,6 +554,32 @@ class Tab1_Factors(QWidget):
         # idx güncelle
         for i, r in enumerate(self.factor_rows): r.idx = i
 
+    def load_json(self, path):
+        """Dışarıdan (NGI-CITDAS) JSON path ile çağrılır"""
+        if not path or not os.path.exists(path): return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            self.project.ngi_data = data
+            info = data.get("export_info", {})
+            self.e_product.setText(info.get("product",""))
+            self.e_batch.setText(info.get("batch",""))
+            self.e_analyst.setText(info.get("operator",""))
+            self.project.flow_rate = info.get("flow_rate", 60)
+            n_series = len(data.get("series", []))
+            self.lbl_import_status.setText(
+                f"✔  {os.path.basename(path)}\n"
+                f"   {n_series} seri | Flow: {self.project.flow_rate} L/min | "
+                f"Ürün: {info.get('product','?')}")
+            self.lbl_import_status.setStyleSheet(
+                f"color: #70e870; font-size:11px; background:transparent;")
+            self.btn_load_series.setEnabled(True)
+            # Yanıt değişkenlerini otomatik seç
+            for key, cb in self.resp_checks.items():
+                cb.setChecked(key in ["mmad","fpf_5um","fpd_5um"])
+        except Exception as e:
+            QMessageBox.critical(self, "JSON Hata", str(e))
+
     def _import_json(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "NGI DoE Verisi Aç", "", "JSON (*.json)")
