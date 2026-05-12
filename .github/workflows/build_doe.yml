@@ -32,7 +32,7 @@ jobs:
         pip install pillow
 
     - name: EXE Olusturma
-      run: python -m PyInstaller --onefile --noconsole --icon=doe_icon.ico --name="NGI_DoE_Analyzer" --add-data "doe_icon.ico;." ngi_doe_analyzer.py
+      run: python -m PyInstaller --onefile --noconsole --icon=doe_icon.ico --name="NGI_DoE_Analyzer" --add-data "doe_icon.ico;." --collect-data pyDOE3 ngi_doe_analyzer.py
 
     - name: EXE Dosyasini Yukle
       uses: actions/upload-artifact@v4
