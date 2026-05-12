@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QAbstractItemView, QSpinBox,
     QDoubleSpinBox, QRadioButton, QButtonGroup, QTextEdit
 )
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QPalette
 
 # ─── resource_path ────────────────────────────────────────────────────────────
@@ -284,6 +284,101 @@ def card_frame():
     return f
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# WORKER THREAD'LER — UI donmasını engeller
+# ═══════════════════════════════════════════════════════════════════════════════
+class OptimizeWorker(QThread):
+    finished = pyqtSignal(object, float)  # (x_opt, d_opt)
+    error    = pyqtSignal(str)
+
+    def __init__(self, project, tgt_rows, resp_ranges):
+        super().__init__()
+        self.project     = project
+        self.tgt_rows    = tgt_rows
+        self.resp_ranges = resp_ranges
+
+    def run(self):
+        from scipy.optimize import differential_evolution
+        all_factors = self.project.factors
+        cont_idx    = [i for i,f in enumerate(all_factors) if f["type"]=="continuous"]
+        bounds      = [(all_factors[i]["low"], all_factors[i]["high"]) for i in cont_idx]
+
+        def desirability(x_cont):
+            actual_vals = []
+            cont_ptr = 0
+            for i, f in enumerate(all_factors):
+                if i in cont_idx:
+                    actual_vals.append(x_cont[cont_ptr]); cont_ptr += 1
+                else:
+                    actual_vals.append(f.get("mid", (f["low"]+f["high"])/2))
+            d_vals = []
+            for resp, info in self.tgt_rows.items():
+                if resp not in self.project.model_results: continue
+                pred, _ = self.project.predict_at(resp, actual_vals)
+                if pred is None: continue
+                goal = info["combo"].currentText()
+                lo, hi = self.resp_ranges.get(resp, (pred-1, pred+1))
+                span = hi - lo if hi != lo else 1.0
+                if goal == "Minimize Et":
+                    d = max(0.0, min(1.0, (hi-pred)/span))
+                elif goal == "Maximize Et":
+                    d = max(0.0, min(1.0, (pred-lo)/span))
+                else:
+                    t = info["target"].value()
+                    d = max(0.0, 1.0 - abs(pred-t)/span)
+                d_vals.append(d)
+            if not d_vals: return 1.0
+            return -(np.prod(d_vals) ** (1.0/len(d_vals)))
+
+        try:
+            result = differential_evolution(
+                desirability, bounds, seed=42,
+                maxiter=800, tol=1e-7, polish=True,
+                popsize=15, mutation=(0.5,1.5), recombination=0.7)
+            self.finished.emit(result.x, -result.fun)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SurfaceWorker(QThread):
+    finished = pyqtSignal(object, object, object)  # XX, YY, ZZ
+    error    = pyqtSignal(str)
+
+    def __init__(self, project, resp_key, x_f, y_f, x_name, y_name, fixed_vals, n=40):
+        super().__init__()
+        self.project    = project
+        self.resp_key   = resp_key
+        self.x_f        = x_f
+        self.y_f        = y_f
+        self.x_name     = x_name
+        self.y_name     = y_name
+        self.fixed_vals = fixed_vals
+        self.n          = n
+
+    def run(self):
+        try:
+            n = self.n
+            xs = np.linspace(self.x_f["low"], self.x_f["high"], n)
+            ys = np.linspace(self.y_f["low"], self.y_f["high"], n)
+            XX, YY = np.meshgrid(xs, ys)
+            ZZ_flat = []
+            for xi, yi in zip(XX.ravel(), YY.ravel()):
+                actual_vals = []
+                for f in self.project.factors:
+                    if f["name"] == self.x_name:   actual_vals.append(xi)
+                    elif f["name"] == self.y_name: actual_vals.append(yi)
+                    elif f["name"] in self.fixed_vals:
+                        actual_vals.append(self.fixed_vals[f["name"]])
+                    else:
+                        actual_vals.append(f.get("mid",(f["low"]+f["high"])/2))
+                pred, _ = self.project.predict_at(self.resp_key, actual_vals)
+                ZZ_flat.append(pred if pred is not None else float("nan"))
+            ZZ = np.array(ZZ_flat).reshape(n, n)
+            self.finished.emit(XX, YY, ZZ)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # VERİ MODELİ
 # ═══════════════════════════════════════════════════════════════════════════════
 class DoEProject:
@@ -348,28 +443,40 @@ class DoEProject:
         if base_df is None: return
         self.model_results = {}
         self.model_errors  = {}
+
+        # Tasarım tipine göre hangi terimler modele girer
+        use_interactions = self.design_type not in [
+            "Plackett-Burman", "One Factor at a Time (OFAT)"]
+        use_quadratic = self.design_type in [
+            "Central Composite (CCD/RSM)", "Box-Behnken (BBD)"]
+
         for resp in self.responses:
             y_vals = [self.run_results.get(i, {}).get(resp, np.nan)
                       for i in range(len(base_df))]
             sub = base_df.copy()
             sub[resp] = y_vals
             sub = sub.dropna()
-            n_needed = len(safe_names) + 2
-            if len(sub) < n_needed:
-                self.model_errors[resp] = (
-                    f"Yetersiz veri: {len(sub)} run var, en az {n_needed} gerekli.")
-                continue
-            try:
-                terms = safe_names[:]
+
+            terms = safe_names[:]
+            if use_interactions:
                 for a, b in itertools.combinations(safe_names, 2):
                     col = f"{a}_x_{b}"
                     sub[col] = sub[a] * sub[b]
                     terms.append(col)
-                if self.design_type in ["Central Composite (CCD/RSM)", "Box-Behnken (BBD)"]:
-                    for a in safe_names:
-                        col = f"{a}_sq"
-                        sub[col] = sub[a] ** 2
-                        terms.append(col)
+            if use_quadratic:
+                for a in safe_names:
+                    col = f"{a}_sq"
+                    sub[col] = sub[a] ** 2
+                    terms.append(col)
+
+            n_needed = len(terms) + 2
+            if len(sub) < n_needed:
+                self.model_errors[resp] = (
+                    f"Yetersiz veri: {len(sub)} run var, "
+                    f"en az {n_needed} gerekli "
+                    f"({len(terms)} terim + 2).")
+                continue
+            try:
                 formula = f"{resp} ~ " + " + ".join(terms)
                 model = ols(formula, data=sub).fit()
                 self.model_results[resp] = model
@@ -1127,6 +1234,13 @@ class Tab3_Analysis(QWidget):
             print(f"Plot error: {e}")
 
     def _fill_anova(self, anova):
+        # mean_sq sütununu hesapla — anova_lm bunu döndürmez
+        anova = anova.copy()
+        anova["mean_sq"] = anova.apply(
+            lambda r: r["sum_sq"]/r["df"]
+            if (not math.isnan(r["sum_sq"]) and r["df"] and r["df"]>0)
+            else np.nan, axis=1)
+
         self.anova_table.setRowCount(len(anova))
         cols = ["df", "sum_sq", "mean_sq", "F", "PR(>F)"]
         self.anova_table.setColumnCount(len(cols) + 1)
@@ -1135,13 +1249,17 @@ class Tab3_Analysis(QWidget):
             self.anova_table.setItem(ri, 0, QTableWidgetItem(str(idx)))
             for ci, col in enumerate(cols):
                 val = row.get(col, np.nan)
-                if isinstance(val, float) and math.isnan(val): txt = "—"
-                elif col == "df":     txt = str(int(val))
-                elif col == "PR(>F)": txt = f"{val:.4f}"
-                else:                 txt = f"{val:.4f}"
+                if not isinstance(val, (int,float)): val = np.nan
+                try:
+                    is_nan = math.isnan(float(val))
+                except: is_nan = True
+                if is_nan:                txt = "—"
+                elif col == "df":         txt = str(int(val))
+                elif col == "PR(>F)":     txt = f"{val:.4f}"
+                else:                     txt = f"{val:.4f}"
                 item = QTableWidgetItem(txt)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if col == "PR(>F)" and isinstance(val, float) and not math.isnan(val):
+                if col == "PR(>F)" and not is_nan:
                     item.setForeground(
                         QColor("#70e870") if val < 0.05 else QColor(TXT))
                 self.anova_table.setItem(ri, ci + 1, item)
@@ -1256,19 +1374,25 @@ class Tab4_Surface(QWidget):
 
     def _update_fixed(self):
         fl = self.fixed_card.layout()
-        # Eski spinbox'ları temizle
-        for w in list(self.fixed_widgets.values()):
-            w.setParent(None)
+        # Tüm eski grup widgetlarını temizle (QLabel "Sabit faktörler:" hariç)
+        while fl.count() > 2:  # 0=label, 1=stretch → diğerlerini sil
+            item = fl.takeAt(1)
+            if item and item.widget():
+                item.widget().setParent(None)
         self.fixed_widgets.clear()
-        # Sabit faktör widgetlarını oluştur
+        # X ve Y dışındaki sürekli faktörleri ekle
         x_name = self.combo_x.currentText()
         y_name = self.combo_y.currentText()
+        added = set()
         for f in self.project.factors:
             if f["name"] in [x_name, y_name]: continue
             if f["type"] != "continuous": continue
+            if f["name"] in added: continue  # mükerrer engeli
+            added.add(f["name"])
             mid = f.get("mid", (f["low"] + f["high"]) / 2)
             grp = QWidget(); grp.setStyleSheet("background:transparent;")
-            gl = QHBoxLayout(grp); gl.setContentsMargins(0,0,0,0); gl.setSpacing(4)
+            gl = QHBoxLayout(grp)
+            gl.setContentsMargins(0,0,0,0); gl.setSpacing(4)
             gl.addWidget(QLabel(f["name"] + ":"))
             sp = QDoubleSpinBox()
             sp.setRange(f["low"], f["high"])
@@ -1287,33 +1411,33 @@ class Tab4_Surface(QWidget):
         y_name = self.combo_y.currentText()
         if x_name == y_name:
             QMessageBox.warning(self, "", "X ve Y aynı faktör olamaz."); return
-        x_f = next((f for f in self.project.factors if f["name"] == x_name), None)
-        y_f = next((f for f in self.project.factors if f["name"] == y_name), None)
+        x_f = next((f for f in self.project.factors if f["name"]==x_name), None)
+        y_f = next((f for f in self.project.factors if f["name"]==y_name), None)
         if not x_f or not y_f: return
 
-        n = 40
-        xs = np.linspace(x_f["low"], x_f["high"], n)
-        ys = np.linspace(y_f["low"], y_f["high"], n)
-        XX, YY = np.meshgrid(xs, ys)
+        fixed_vals = {name: sp.value()
+                      for name, sp in self.fixed_widgets.items()}
 
-        ZZ_flat = []
-        for xi, yi in zip(XX.ravel(), YY.ravel()):
-            actual_vals = []
-            for f in self.project.factors:
-                if f["name"] == x_name:   actual_vals.append(xi)
-                elif f["name"] == y_name: actual_vals.append(yi)
-                elif f["name"] in self.fixed_widgets:
-                    actual_vals.append(self.fixed_widgets[f["name"]].value())
-                else:
-                    actual_vals.append(f.get("mid", (f["low"]+f["high"])/2))
-            pred, _ = self.project.predict_at(resp_key, actual_vals)
-            ZZ_flat.append(pred if pred is not None else float("nan"))
+        self.btn_plot.setEnabled(False)
+        self.btn_plot.setText("⏳ Hesaplanıyor...")
 
-        try:
-            ZZ = np.array(ZZ_flat).reshape(n, n)
-        except Exception as e:
-            QMessageBox.critical(self, "Tahmin Hatası", str(e)); return
+        self._surf_worker = SurfaceWorker(
+            self.project, resp_key, x_f, y_f,
+            x_name, y_name, fixed_vals, n=40)
+        self._surf_worker.finished.connect(
+            lambda XX,YY,ZZ: self._on_surface_ready(
+                XX,YY,ZZ,resp_key,x_name,y_name))
+        self._surf_worker.error.connect(self._on_surface_error)
+        self._surf_worker.start()
 
+    def _on_surface_error(self, msg):
+        self.btn_plot.setEnabled(True)
+        self.btn_plot.setText("▶ Çiz")
+        QMessageBox.critical(self, "Tahmin Hatası", msg)
+
+    def _on_surface_ready(self, XX, YY, ZZ, resp_key, x_name, y_name):
+        self.btn_plot.setEnabled(True)
+        self.btn_plot.setText("▶ Çiz")
         self.fig_surf.clear()
         ax3 = self.fig_surf.add_subplot(121, projection="3d")
         ax2 = self.fig_surf.add_subplot(122)
@@ -1322,20 +1446,22 @@ class Tab4_Surface(QWidget):
         ax3.plot_surface(XX, YY, ZZ, cmap="coolwarm", alpha=0.85, edgecolor="none")
         ax3.set_xlabel(x_name, fontsize=8, color=TXT2)
         ax3.set_ylabel(y_name, fontsize=8, color=TXT2)
-        ax3.set_zlabel(RESPONSE_LABELS.get(resp_key, resp_key), fontsize=7, color=TXT2)
+        ax3.set_zlabel(RESPONSE_LABELS.get(resp_key,resp_key), fontsize=7, color=TXT2)
         ax3.set_title("Response Surface", fontsize=9, color=TXT)
         ax3.set_facecolor("#0e1525")
         ax3.tick_params(colors=TXT2, labelsize=7)
 
-        cp = ax2.contourf(XX, YY, ZZ, levels=15, cmap="coolwarm")
+        cp  = ax2.contourf(XX, YY, ZZ, levels=15, cmap="coolwarm")
+        cs  = ax2.contour(XX, YY, ZZ, levels=8, colors="white",
+                          alpha=0.5, linewidths=0.8)
+        ax2.clabel(cs, inline=True, fontsize=7, fmt="%.2f",
+                   colors="white")  # ← değer etiketleri
         self.fig_surf.colorbar(cp, ax=ax2, shrink=0.8)
-        ax2.contour(XX, YY, ZZ, levels=8, colors="white", alpha=0.3, linewidths=0.5)
         ax2.set_xlabel(x_name, fontsize=8, color=TXT2)
         ax2.set_ylabel(y_name, fontsize=8, color=TXT2)
         ax2.set_title("Kontur Haritası", fontsize=9, color=TXT)
         ax2.set_facecolor("#0e1525")
         ax2.tick_params(colors=TXT2, labelsize=8)
-
         self.canvas_surf.draw()
 
 
@@ -1440,71 +1566,46 @@ class Tab5_Optimization(QWidget):
         if not self.project.model_results:
             QMessageBox.warning(
                 self, "", "Önce Analiz sekmesinden 'Model Fit' yapın."); return
-        from scipy.optimize import differential_evolution
-
-        all_factors = self.project.factors
-        cont_idx = [i for i, f in enumerate(all_factors)
-                    if f["type"] == "continuous"]
+        cont_idx = [i for i,f in enumerate(self.project.factors)
+                    if f["type"]=="continuous"]
         if not cont_idx:
-            QMessageBox.warning(self, "", "Optimize edilecek sürekli faktör yok."); return
+            QMessageBox.warning(self,"","Optimize edilecek sürekli faktör yok."); return
 
-        cont_factors = [all_factors[i] for i in cont_idx]
-        bounds = [(f["low"], f["high"]) for f in cont_factors]
-
-        # Yanıt aralıkları
         resp_ranges = {}
         df2 = self.project.build_response_table()
         for resp in self.project.responses:
             if df2 is not None and resp in df2.columns:
                 col_vals = df2[resp].dropna()
                 if len(col_vals) >= 2:
-                    resp_ranges[resp] = (
-                        float(col_vals.min()), float(col_vals.max()))
+                    resp_ranges[resp] = (float(col_vals.min()), float(col_vals.max()))
 
-        def desirability(x_cont):
-            actual_vals = []
-            cont_ptr = 0
-            for i, f in enumerate(all_factors):
-                if i in cont_idx:
-                    actual_vals.append(x_cont[cont_ptr]); cont_ptr += 1
-                else:
-                    actual_vals.append(f.get("mid", (f["low"]+f["high"])/2))
-            d_vals = []
-            for resp, info in self.tgt_rows.items():
-                if resp not in self.project.model_results: continue
-                pred, _ = self.project.predict_at(resp, actual_vals)
-                if pred is None: continue
-                goal = info["combo"].currentText()
-                lo, hi = resp_ranges.get(resp, (pred - 1, pred + 1))
-                span = hi - lo if hi != lo else 1.0
-                if goal == "Minimize Et":
-                    d = max(0.0, min(1.0, (hi - pred) / span))
-                elif goal == "Maximize Et":
-                    d = max(0.0, min(1.0, (pred - lo) / span))
-                else:
-                    t = info["target"].value()
-                    d = max(0.0, 1.0 - abs(pred - t) / span)
-                d_vals.append(d)
-            if not d_vals: return 1.0
-            return -(np.prod(d_vals) ** (1.0 / len(d_vals)))
+        self.btn_opt.setEnabled(False)
+        self.btn_opt.setText("⏳ Hesaplanıyor...")
+        self.txt_opt_result.setText("Optimizasyon çalışıyor, lütfen bekleyin...")
 
-        try:
-            result = differential_evolution(
-                desirability, bounds, seed=42,
-                maxiter=800, tol=1e-7, polish=True,
-                popsize=15, mutation=(0.5, 1.5), recombination=0.7)
-            x_opt = result.x
-            d_opt = -result.fun
-        except Exception as e:
-            QMessageBox.critical(self, "Optimizasyon Hatası", str(e)); return
+        self._opt_worker = OptimizeWorker(
+            self.project, self.tgt_rows, resp_ranges)
+        self._opt_worker.finished.connect(self._on_opt_done)
+        self._opt_worker.error.connect(self._on_opt_error)
+        self._opt_worker.start()
 
+    def _on_opt_error(self, msg):
+        self.btn_opt.setEnabled(True)
+        self.btn_opt.setText("🚀 Optimize Et")
+        QMessageBox.critical(self, "Optimizasyon Hatası", msg)
+
+    def _on_opt_done(self, x_opt, d_opt):
+        self.btn_opt.setEnabled(True)
+        self.btn_opt.setText("🚀 Optimize Et")
+        all_factors = self.project.factors
+        cont_idx = [i for i,f in enumerate(all_factors) if f["type"]=="continuous"]
         actual_opt = []
         cont_ptr = 0
         for i, f in enumerate(all_factors):
             if i in cont_idx:
                 actual_opt.append(x_opt[cont_ptr]); cont_ptr += 1
             else:
-                actual_opt.append(f.get("mid", (f["low"]+f["high"])/2))
+                actual_opt.append(f.get("mid",(f["low"]+f["high"])/2))
 
         lines = [
             "─" * 54,
@@ -1526,20 +1627,298 @@ class Tab5_Optimization(QWidget):
             if pred is None:
                 lines.append(f"    {lbl:34s} = (tahmin hatası)")
             else:
-                ci_str = (f"  [%95 PI: {ci[0]:.4f} – {ci[1]:.4f}]"
-                          if ci else "")
+                ci_str = (f"  [%95 PI: {ci[0]:.4f} – {ci[1]:.4f}]" if ci else "")
                 lines.append(f"    {lbl:34s} = {pred:.4f}{ci_str}")
 
-        d_yorum = ("Mükemmel" if d_opt > 0.8 else
-                   "İyi"      if d_opt > 0.6 else
-                   "Kabul Edilebilir" if d_opt > 0.4 else "Zayıf")
-        lines += [
-            "",
+        d_yorum = ("Mükemmel" if d_opt>0.8 else "İyi" if d_opt>0.6
+                   else "Kabul Edilebilir" if d_opt>0.4 else "Zayıf")
+        lines += ["",
             f"  Genel Desirability  = {d_opt:.4f}  ({d_yorum})",
-            "─" * 54
-        ]
+            "─" * 54]
         self.txt_opt_result.setText("\n".join(lines))
 
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEKME 6 — TASARIM UZAYI
+# ═══════════════════════════════════════════════════════════════════════════════
+class Tab6_DesignSpace(QWidget):
+    def __init__(self, project: DoEProject, app_ref, parent=None):
+        super().__init__(parent)
+        self.project = project
+        self.app = app_ref
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self); lay.setSpacing(10); lay.setContentsMargins(14,14,14,14)
+
+        # Kontrol barı
+        bar = QHBoxLayout(); bar.setSpacing(10)
+        bar.addWidget(section_label("🗂  Tasarım Uzayı Görselleştirme"))
+        bar.addStretch()
+        self.cb_heatmap = QCheckBox("Kapsama Isı Haritasını Göster")
+        self.cb_heatmap.setStyleSheet("background:transparent;")
+        self.cb_heatmap.stateChanged.connect(self._draw)
+        bar.addWidget(self.cb_heatmap)
+        self.btn_draw = make_btn("▶ Çiz", "rgba(20,60,80,0.8)", 30)
+        self.btn_draw.clicked.connect(self._draw)
+        bar.addWidget(self.btn_draw)
+        lay.addLayout(bar)
+
+        # Bilgi kartı
+        self.info_card = card_frame()
+        il = QHBoxLayout(self.info_card); il.setContentsMargins(14,8,14,8); il.setSpacing(30)
+        self.lbl_design  = QLabel("Tasarım: —")
+        self.lbl_runs    = QLabel("Run: —")
+        self.lbl_factors = QLabel("Faktör: —")
+        self.lbl_coverage= QLabel("Kapsama: —")
+        for l in [self.lbl_design,self.lbl_runs,self.lbl_factors,self.lbl_coverage]:
+            l.setStyleSheet(f"color:{TXT}; font-size:12px; font-weight:bold; background:transparent;")
+            il.addWidget(l)
+        il.addStretch()
+        lay.addWidget(self.info_card)
+
+        # Grafik alanı
+        self.fig = Figure(facecolor=BG2)
+        self.canvas = FigureCanvas(self.fig)
+        lay.addWidget(self.canvas, 1)
+
+    def refresh(self):
+        try:
+            self.fig.clear()
+            self.canvas.draw()
+            self.lbl_design.setText(f"Tasarım: {self.project.design_type}")
+            df = self.project.design_matrix
+            n = len(df) if df is not None else 0
+            self.lbl_runs.setText(f"Run: {n}")
+            self.lbl_factors.setText(f"Faktör: {len(self.project.factors)}")
+            self.lbl_coverage.setText("Kapsama: —")
+        except Exception as e:
+            print(f"Tab6 refresh error: {e}")
+
+    def _draw(self):
+        df = self.project.design_matrix
+        if df is None:
+            QMessageBox.warning(self,"","Önce tasarım matrisi oluşturun."); return
+        factors = [f for f in self.project.factors if f["type"]=="continuous"]
+        k = len(factors)
+        if k < 2:
+            QMessageBox.warning(self,"","En az 2 sürekli faktör gerekli."); return
+
+        show_heat = self.cb_heatmap.isChecked()
+
+        # Tasarım noktalarını al
+        pts = []
+        for _, row in df.iterrows():
+            pt = []
+            for f in factors:
+                val = row.get(f["name"], f.get("mid",(f["low"]+f["high"])/2))
+                # normalize et [0,1]
+                span = f["high"] - f["low"]
+                norm = (val - f["low"]) / span if span != 0 else 0.5
+                pt.append(norm)
+            pts.append(pt)
+        pts = np.array(pts)
+
+        # Nokta tiplerini belirle (merkez, kenar, köşe)
+        def classify(pt):
+            n_center  = sum(1 for v in pt if abs(v-0.5) < 0.05)
+            n_extreme = sum(1 for v in pt if v < 0.05 or v > 0.95)
+            if n_center == len(pt): return "merkez"
+            if n_extreme == len(pt): return "köşe"
+            return "kenar"
+
+        labels   = [classify(p) for p in pts]
+        colors_map = {"merkez":"#70e870","kenar":"#E84040","köşe":"#7090b0"}
+        colors   = [colors_map.get(l,"#2E75B6") for l in labels]
+
+        self.fig.clear()
+        self.fig.patch.set_facecolor(BG2)
+
+        if k == 2:
+            self._draw_2d(factors, pts, colors, labels, show_heat)
+        elif k == 3:
+            self._draw_3d(factors, pts, colors, labels, show_heat)
+        else:
+            self._draw_layered(factors, pts, colors, labels, show_heat)
+
+        self.canvas.draw()
+
+        # Kapsama hesapla
+        grid_n = 10
+        grid   = np.mgrid[tuple(slice(0,1,grid_n*1j) for _ in range(k))]
+        grid   = grid.reshape(k,-1).T
+        covered = 0
+        for gp in grid:
+            dists = np.linalg.norm(pts - gp, axis=1)
+            if dists.min() < 0.25: covered += 1
+        pct = covered / len(grid) * 100
+        self.lbl_coverage.setText(f"Kapsama: %{pct:.0f}")
+
+    def _draw_2d(self, factors, pts, colors, labels, show_heat):
+        if show_heat:
+            ax_heat = self.fig.add_subplot(121)
+            ax_main = self.fig.add_subplot(122)
+        else:
+            ax_main = self.fig.add_subplot(111)
+
+        # Ana scatter
+        for lbl, col in [("köşe","#7090b0"),("kenar","#E84040"),("merkez","#70e870")]:
+            idx = [i for i,l in enumerate(labels) if l==lbl]
+            if idx:
+                ax_main.scatter(pts[idx,0], pts[idx,1], c=col, s=120,
+                               zorder=5, label=lbl.capitalize(), edgecolors="white", lw=0.5)
+
+        # Küp çerçevesi
+        for x in [0,1]:
+            ax_main.axvline(x, color="#2a4060", lw=0.8, ls="--", alpha=0.5)
+        for y in [0,1]:
+            ax_main.axhline(y, color="#2a4060", lw=0.8, ls="--", alpha=0.5)
+
+        # Run numaraları
+        for i, (px,py) in enumerate(pts):
+            ax_main.annotate(str(i+1), (px,py),
+                           textcoords="offset points", xytext=(6,4),
+                           fontsize=7, color=TXT2)
+
+        ax_main.set_xlim(-0.1, 1.1); ax_main.set_ylim(-0.1, 1.1)
+        ax_main.set_xlabel(factors[0]["name"], color=TXT2, fontsize=9)
+        ax_main.set_ylabel(factors[1]["name"], color=TXT2, fontsize=9)
+        ax_main.set_title("Tasarım Noktaları", color=TXT, fontsize=10)
+        ax_main.set_facecolor("#0e1525")
+        ax_main.tick_params(colors=TXT2, labelsize=8)
+        for sp in ax_main.spines.values(): sp.set_color("#2a4060")
+        ax_main.legend(fontsize=8, facecolor=BG3, labelcolor=TXT)
+
+        # X/Y tick etiketleri gerçek değerlere çevir
+        ticks = [0, 0.25, 0.5, 0.75, 1.0]
+        for ax_obj, fi in [(ax_main, 0)]:
+            f = factors[fi]
+            real = [f["low"] + t*(f["high"]-f["low"]) for t in ticks]
+            ax_obj.set_xticks(ticks)
+            ax_obj.set_xticklabels([f"{v:.2f}" for v in real], fontsize=7, color=TXT2)
+        f1 = factors[1]
+        real1 = [f1["low"] + t*(f1["high"]-f1["low"]) for t in ticks]
+        ax_main.set_yticks(ticks)
+        ax_main.set_yticklabels([f"{v:.2f}" for v in real1], fontsize=7, color=TXT2)
+
+        if show_heat:
+            self._draw_heatmap_2d(ax_heat, pts, factors)
+
+    def _draw_heatmap_2d(self, ax, pts, factors):
+        n = 20
+        xx, yy = np.mgrid[0:1:n*1j, 0:1:n*1j]
+        density = np.zeros((n,n))
+        for px,py in pts[:,:2]:
+            ix = int(min(px*(n-1), n-1))
+            iy = int(min(py*(n-1), n-1))
+            density[ix,iy] += 1
+        from scipy.ndimage import gaussian_filter
+        density = gaussian_filter(density, sigma=1.5)
+        im = ax.imshow(density.T, origin="lower", extent=[0,1,0,1],
+                      cmap="YlOrRd", aspect="auto", alpha=0.85)
+        self.fig.colorbar(im, ax=ax, shrink=0.8, label="Kapsama yoğunluğu")
+        ax.scatter(pts[:,0], pts[:,1], c="white", s=40, zorder=5,
+                  edgecolors="black", lw=0.5)
+        ax.set_xlabel(factors[0]["name"], color=TXT2, fontsize=9)
+        ax.set_ylabel(factors[1]["name"], color=TXT2, fontsize=9)
+        ax.set_title("Kapsama Isı Haritası", color=TXT, fontsize=10)
+        ax.set_facecolor("#0e1525")
+        ax.tick_params(colors=TXT2, labelsize=7)
+        for sp in ax.spines.values(): sp.set_color("#2a4060")
+
+    def _draw_3d(self, factors, pts, colors, labels, show_heat):
+        if show_heat:
+            ax3 = self.fig.add_subplot(121, projection="3d")
+            ax_h = self.fig.add_subplot(122)
+        else:
+            ax3 = self.fig.add_subplot(111, projection="3d")
+
+        for lbl, col in [("köşe","#7090b0"),("kenar","#E84040"),("merkez","#70e870")]:
+            idx = [i for i,l in enumerate(labels) if l==lbl]
+            if idx:
+                ax3.scatter(pts[idx,0], pts[idx,1], pts[idx,2],
+                           c=col, s=100, zorder=5, label=lbl.capitalize(),
+                           edgecolors="white", linewidths=0.5)
+
+        # Küp tel çerçevesi
+        for i in range(2):
+            for j in range(2):
+                ax3.plot([i,i],[j,j],[0,1], color="#2a4060", lw=0.6, alpha=0.5)
+                ax3.plot([i,i],[0,1],[j,j], color="#2a4060", lw=0.6, alpha=0.5)
+                ax3.plot([0,1],[i,i],[j,j], color="#2a4060", lw=0.6, alpha=0.5)
+
+        for i, pt in enumerate(pts):
+            ax3.text(pt[0], pt[1], pt[2], str(i+1),
+                    fontsize=7, color=TXT2)
+
+        ax3.set_xlabel(factors[0]["name"], color=TXT2, fontsize=8)
+        ax3.set_ylabel(factors[1]["name"], color=TXT2, fontsize=8)
+        ax3.set_zlabel(factors[2]["name"], color=TXT2, fontsize=8)
+        ax3.set_title(f"{self.project.design_type}", color=TXT, fontsize=9)
+        ax3.set_facecolor("#0e1525")
+        ax3.tick_params(colors=TXT2, labelsize=7)
+        ax3.legend(fontsize=8, facecolor=BG3, labelcolor=TXT)
+
+        if show_heat:
+            self._draw_heatmap_2d(ax_h, pts[:,:2], factors[:2])
+
+    def _draw_layered(self, factors, pts, colors, labels, show_heat):
+        # 4+ faktör: D faktörü katmanlar halinde göster
+        # İlk 3 faktörü kullan, 4. faktör katman
+        n_layers = 3
+        layer_vals = np.linspace(0, 1, n_layers)
+        layer_names = ["-1 (Alt)", "0 (Orta)", "+1 (Üst)"]
+
+        cols_count = n_layers + (1 if show_heat else 0)
+        axes = []
+        for i in range(n_layers):
+            ax = self.fig.add_subplot(1, cols_count, i+1)
+            axes.append(ax)
+
+        for li, (lv, lname) in enumerate(zip(layer_vals, layer_names)):
+            ax = axes[li]
+            # Bu katmana yakın noktaları filtrele
+            if pts.shape[1] > 3:
+                mask = np.abs(pts[:,3] - lv) < 0.35
+            else:
+                mask = np.ones(len(pts), dtype=bool)
+            sub_pts = pts[mask]
+            sub_col = [colors[i] for i,m in enumerate(mask) if m]
+            sub_lbl = [labels[i] for i,m in enumerate(mask) if m]
+            sub_idx = [i for i,m in enumerate(mask) if m]
+
+            if len(sub_pts) > 0:
+                ax.scatter(sub_pts[:,0], sub_pts[:,1],
+                          c=sub_col, s=100, zorder=5,
+                          edgecolors="white", lw=0.5)
+                for j, (px, py) in enumerate(sub_pts[:,:2]):
+                    ax.annotate(str(sub_idx[j]+1), (px,py),
+                               textcoords="offset points", xytext=(5,3),
+                               fontsize=7, color=TXT2)
+
+            ax.set_xlim(-0.1,1.1); ax.set_ylim(-0.1,1.1)
+            ax.set_xlabel(factors[0]["name"], color=TXT2, fontsize=8)
+            ax.set_ylabel(factors[1]["name"] if li==0 else "", color=TXT2, fontsize=8)
+            ax.set_title(f"{factors[3]['name'] if len(factors)>3 else 'F4'} = {lname}",
+                        color=GOLD, fontsize=9)
+            ax.set_facecolor("#0e1525")
+            ax.tick_params(colors=TXT2, labelsize=7)
+            for sp in ax.spines.values(): sp.set_color("#2a4060")
+
+            # Izgara
+            for v in [0, 0.5, 1]:
+                ax.axvline(v, color="#2a4060", lw=0.5, ls="--", alpha=0.4)
+                ax.axhline(v, color="#2a4060", lw=0.5, ls="--", alpha=0.4)
+
+        if show_heat:
+            ax_h = self.fig.add_subplot(1, cols_count, cols_count)
+            self._draw_heatmap_2d(ax_h, pts[:,:2], factors[:2])
+
+        self.fig.suptitle(
+            f"{self.project.design_type} — Tasarım Uzayı",
+            color=TXT, fontsize=11, y=1.01)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ANA UYGULAMA
@@ -1581,6 +1960,9 @@ class DoEApp(QMainWindow):
         t2.setStyleSheet(f"color:{TXT2}; font-size:11px; background:transparent;")
         hl.addWidget(t2)
         hl.addStretch()
+        btn_pdf = make_btn("📄 PDF Rapor", "rgba(60,20,90,0.8)", 32)
+        btn_pdf.clicked.connect(self.export_pdf)
+        hl.addWidget(btn_pdf)
         ml.addWidget(hdr)
 
         self.tabs = QTabWidget()
@@ -1592,19 +1974,245 @@ class DoEApp(QMainWindow):
         self.tab3 = Tab3_Analysis(self.project, self)
         self.tab4 = Tab4_Surface(self.project, self)
         self.tab5 = Tab5_Optimization(self.project, self)
+        self.tab6 = Tab6_DesignSpace(self.project, self)
 
         self.tabs.addTab(self.tab1, "1 · Faktörler & Tasarım")
         self.tabs.addTab(self.tab2, "2 · Tasarım Matrisi")
         self.tabs.addTab(self.tab3, "3 · Model & ANOVA")
         self.tabs.addTab(self.tab4, "4 · Response Surface")
         self.tabs.addTab(self.tab5, "5 · Optimizasyon")
+        self.tabs.addTab(self.tab6, "6 · Tasarım Uzayı")
 
     def refresh_all_tabs(self):
-        for tab in [self.tab2, self.tab3, self.tab4, self.tab5]:
+        for tab in [self.tab2, self.tab3, self.tab4, self.tab5, self.tab6]:
             try:
                 tab.refresh()
             except Exception as e:
                 print(f"Tab refresh error ({tab.__class__.__name__}): {e}")
+
+    def export_pdf(self):
+        """PDF rapor oluştur"""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                        Table, TableStyle, Image as RLImage,
+                                        HRFlowable, PageBreak)
+        import io, tempfile
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "PDF Kaydet",
+            f"DoE_Rapor_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+            "PDF (*.pdf)")
+        if not path: return
+
+        doc = SimpleDocTemplate(path, pagesize=A4,
+            leftMargin=2*cm, rightMargin=2*cm,
+            topMargin=2*cm, bottomMargin=2*cm)
+
+        styles = getSampleStyleSheet()
+        style_h1 = ParagraphStyle("H1", parent=styles["Heading1"],
+            fontSize=16, textColor=colors.HexColor("#002D62"),
+            spaceAfter=8)
+        style_h2 = ParagraphStyle("H2", parent=styles["Heading2"],
+            fontSize=12, textColor=colors.HexColor("#1F4E79"),
+            spaceAfter=6, spaceBefore=12)
+        style_body = ParagraphStyle("Body", parent=styles["Normal"],
+            fontSize=9, spaceAfter=4, leading=14)
+        style_gold = ParagraphStyle("Gold", parent=styles["Normal"],
+            fontSize=9, textColor=colors.HexColor("#996600"))
+
+        story = []
+        p = self.project
+
+        # Başlık
+        story.append(Paragraph("NGI DoE Analiz Raporu", style_h1))
+        story.append(HRFlowable(width="100%", thickness=2,
+                                color=colors.HexColor("#FFC600")))
+        story.append(Spacer(1, 0.3*cm))
+
+        # Proje bilgisi
+        story.append(Paragraph("Proje Bilgileri", style_h2))
+        meta = [
+            ["Ürün",      p.product   or "—"],
+            ["Lot No.",   p.batch     or "—"],
+            ["Analist",   p.analyst   or "—"],
+            ["Tarih",     p.date      or "—"],
+            ["Tasarım",   p.design_type],
+            ["Run Sayısı", str(len(p.design_matrix)) if p.design_matrix is not None else "—"],
+            ["Faktör Sayısı", str(len(p.factors))],
+        ]
+        t = Table(meta, colWidths=[4*cm, 12*cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#E8F0F8")),
+            ("FONTNAME",   (0,0), (0,-1), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0), (-1,-1), 9),
+            ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#CCCCCC")),
+            ("ROWBACKGROUNDS", (0,0), (-1,-1),
+             [colors.white, colors.HexColor("#F8F8F8")]),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 0.4*cm))
+
+        # Faktörler tablosu
+        story.append(Paragraph("Faktörler", style_h2))
+        fdata = [["Faktör", "Tip", "Alt", "Merkez", "Üst", "Birim"]]
+        for f in p.factors:
+            fdata.append([
+                f["name"],
+                "Sürekli" if f["type"]=="continuous" else "Kategorik",
+                f"{f['low']:.4f}", f"{f.get('mid',(f['low']+f['high'])/2):.4f}",
+                f"{f['high']:.4f}", f.get("unit","—")])
+        ft = Table(fdata, colWidths=[4.5*cm,3*cm,2*cm,2*cm,2*cm,2.5*cm])
+        ft.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F4E79")),
+            ("TEXTCOLOR", (0,0),(-1,0), colors.white),
+            ("FONTNAME",  (0,0),(-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",  (0,0),(-1,-1), 9),
+            ("GRID",      (0,0),(-1,-1), 0.5, colors.HexColor("#CCCCCC")),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),
+             [colors.white, colors.HexColor("#F8F8F8")]),
+        ]))
+        story.append(ft)
+        story.append(Spacer(1, 0.4*cm))
+
+        # Tasarım matrisi + sonuçlar
+        if p.design_matrix is not None:
+            story.append(Paragraph("Tasarım Matrisi & Ölçüm Sonuçları", style_h2))
+            df = p.build_response_table()
+            show_cols = [c for c in p.design_matrix.columns
+                        if not c.endswith("_coded")]
+            all_cols = show_cols + p.responses
+            headers = [RESPONSE_LABELS.get(c,c) for c in all_cols]
+            tdata = [headers]
+            for ri in range(len(df)):
+                row_data = []
+                for col in all_cols:
+                    if col in df.columns:
+                        val = df.iloc[ri][col]
+                        if col == "Run": row_data.append(str(int(val)))
+                        elif isinstance(val,float): row_data.append(f"{val:.3f}")
+                        else: row_data.append(str(val))
+                    else:
+                        v = p.run_results.get(ri,{}).get(col,"—")
+                        row_data.append(f"{v:.3f}" if isinstance(v,float) else str(v))
+                tdata.append(row_data)
+            col_w = 16*cm / max(len(all_cols),1)
+            mt = Table(tdata, colWidths=[col_w]*len(all_cols))
+            mt.setStyle(TableStyle([
+                ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F4E79")),
+                ("TEXTCOLOR", (0,0),(-1,0), colors.white),
+                ("FONTNAME",  (0,0),(-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",  (0,0),(-1,-1), 7),
+                ("GRID",      (0,0),(-1,-1), 0.3, colors.HexColor("#CCCCCC")),
+                ("ROWBACKGROUNDS",(0,1),(-1,-1),
+                 [colors.white, colors.HexColor("#F8F8F8")]),
+            ]))
+            story.append(mt)
+
+        # Model sonuçları
+        if p.model_results:
+            story.append(PageBreak())
+            story.append(Paragraph("Model Sonuçları", style_h2))
+            for resp, model in p.model_results.items():
+                lbl = RESPONSE_LABELS.get(resp,resp)
+                story.append(Paragraph(f"<b>{lbl}</b>", style_gold))
+                try:
+                    r2 = model.rsquared; r2a = model.rsquared_adj
+                    rmse = float(np.sqrt(model.mse_resid)) if model.mse_resid else 0
+                    summary_data = [
+                        ["R²", f"{r2:.4f}", "Adj R²", f"{r2a:.4f}"],
+                        ["RMSE", f"{rmse:.4f}", "N", str(int(model.nobs))],
+                        ["F-stat", f"{model.fvalue:.3f}", "p", f"{model.f_pvalue:.4f}"],
+                    ]
+                    st = Table(summary_data, colWidths=[3*cm,3*cm,3*cm,3*cm])
+                    st.setStyle(TableStyle([
+                        ("FONTSIZE",(0,0),(-1,-1),8),
+                        ("GRID",(0,0),(-1,-1),0.3,colors.HexColor("#CCCCCC")),
+                        ("BACKGROUND",(0,0),(0,-1),colors.HexColor("#E8F0F8")),
+                        ("BACKGROUND",(2,0),(2,-1),colors.HexColor("#E8F0F8")),
+                    ]))
+                    story.append(st)
+                except: pass
+                story.append(Spacer(1, 0.2*cm))
+
+                # ANOVA
+                try:
+                    from statsmodels.stats.anova import anova_lm
+                    anova = anova_lm(model, typ=2)
+                    anova_data = [["Kaynak","df","SS","MS","F","p"]]
+                    for idx2, row2 in anova.iterrows():
+                        df_v = row2.get("df",np.nan)
+                        ss_v = row2.get("sum_sq",np.nan)
+                        ms_v = ss_v/df_v if (not math.isnan(ss_v) and df_v and df_v>0) else np.nan
+                        f_v  = row2.get("F",np.nan)
+                        p_v  = row2.get("PR(>F)",np.nan)
+                        def fmt(v): return "—" if isinstance(v,float) and math.isnan(v) else f"{v:.4f}"
+                        anova_data.append([
+                            str(idx2),
+                            str(int(df_v)) if not math.isnan(df_v) else "—",
+                            fmt(ss_v), fmt(ms_v), fmt(f_v), fmt(p_v)])
+                    at = Table(anova_data,
+                              colWidths=[5*cm,1.5*cm,2*cm,2*cm,2*cm,2*cm])
+                    at.setStyle(TableStyle([
+                        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1F4E79")),
+                        ("TEXTCOLOR", (0,0),(-1,0),colors.white),
+                        ("FONTNAME",  (0,0),(-1,0),"Helvetica-Bold"),
+                        ("FONTSIZE",  (0,0),(-1,-1),8),
+                        ("GRID",      (0,0),(-1,-1),0.3,colors.HexColor("#CCCCCC")),
+                        ("ROWBACKGROUNDS",(0,1),(-1,-1),
+                         [colors.white,colors.HexColor("#F8F8F8")]),
+                    ]))
+                    story.append(at)
+                except: pass
+                story.append(Spacer(1, 0.4*cm))
+
+        # Optimizasyon sonucu
+        opt_text = self.tab5.txt_opt_result.toPlainText()
+        if opt_text and "─" in opt_text:
+            story.append(PageBreak())
+            story.append(Paragraph("Optimizasyon Sonucu", style_h2))
+            for line in opt_text.split("\n"):
+                story.append(Paragraph(
+                    line.replace(" ","&nbsp;"),
+                    ParagraphStyle("Mono", parent=styles["Normal"],
+                        fontSize=8, fontName="Courier", leading=12)))
+
+        # Grafikleri kaydet
+        story.append(PageBreak())
+        story.append(Paragraph("Grafikler", style_h2))
+
+        for fig_obj, title in [
+            (self.tab3.fig_analysis, "Model Analiz Grafikleri"),
+            (self.tab4.fig_surf,     "Response Surface"),
+            (self.tab6.fig,          "Tasarım Uzayı"),
+        ]:
+            try:
+                buf = io.BytesIO()
+                fig_obj.savefig(buf, format="png", dpi=120,
+                               facecolor=fig_obj.get_facecolor(),
+                               bbox_inches="tight")
+                buf.seek(0)
+                img = RLImage(buf, width=16*cm, height=10*cm)
+                story.append(Paragraph(f"<b>{title}</b>", style_gold))
+                story.append(img)
+                story.append(Spacer(1, 0.4*cm))
+            except Exception as e:
+                print(f"Grafik PDF hatası ({title}): {e}")
+
+        try:
+            doc.build(story)
+            import subprocess, platform
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            QMessageBox.information(self, "✔", f"PDF oluşturuldu:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "PDF Hatası", str(e))
 
 
 if __name__ == "__main__":
