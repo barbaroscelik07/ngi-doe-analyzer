@@ -1835,12 +1835,32 @@ class Tab6_DesignSpace(QWidget):
         else:
             ax3 = self.fig.add_subplot(111, projection="3d")
 
-        for lbl, col in [("köşe","#7090b0"),("kenar","#E84040"),("merkez","#70e870")]:
-            idx = [i for i,l in enumerate(labels) if l==lbl]
-            if idx:
-                ax3.scatter(pts[idx,0], pts[idx,1], pts[idx,2],
-                           c=col, s=100, zorder=5, label=lbl.capitalize(),
+        # Üst üste düşen noktaları say
+        from collections import Counter
+        pt_counts = Counter([tuple(np.round(p, 4)) for p in pts])
+
+        # Benzersiz noktaları çiz
+        plotted = {}
+        for i, (pt, lbl, col) in enumerate(zip(pts, labels, colors)):
+            key = tuple(np.round(pt, 4))
+            if key not in plotted:
+                count = pt_counts[key]
+                size  = 120 if lbl == "merkez" else 80
+                ax3.scatter(pt[0], pt[1], pt[2],
+                           c=col, s=size, zorder=5,
                            edgecolors="white", linewidths=0.5)
+                # Run numarası + tekrar sayısı
+                label_txt = f"{i+1}" if count == 1 else f"{i+1}(×{count})"
+                ax3.text(pt[0]+0.03, pt[1]+0.03, pt[2]+0.03,
+                        label_txt, fontsize=7, color=TXT2)
+                plotted[key] = True
+
+        # Legend için dummy scatter
+        for lbl, col, s in [("Kose","#7090b0",80),
+                              ("Kenar","#E84040",80),
+                              ("Merkez","#70e870",120)]:
+            ax3.scatter([],[], c=col, s=s, label=lbl,
+                       edgecolors="white", linewidths=0.5)
 
         # Küp tel çerçevesi
         for i in range(2):
@@ -1849,14 +1869,13 @@ class Tab6_DesignSpace(QWidget):
                 ax3.plot([i,i],[0,1],[j,j], color="#2a4060", lw=0.6, alpha=0.5)
                 ax3.plot([0,1],[i,i],[j,j], color="#2a4060", lw=0.6, alpha=0.5)
 
-        for i, pt in enumerate(pts):
-            ax3.text(pt[0], pt[1], pt[2], str(i+1),
-                    fontsize=7, color=TXT2)
-
         ax3.set_xlabel(factors[0]["name"], color=TXT2, fontsize=8)
         ax3.set_ylabel(factors[1]["name"], color=TXT2, fontsize=8)
         ax3.set_zlabel(factors[2]["name"], color=TXT2, fontsize=8)
-        ax3.set_title(f"{self.project.design_type}", color=TXT, fontsize=9)
+        n_unique = len(pt_counts)
+        n_total  = len(pts)
+        title_str = self.project.design_type + "\n" + str(len(pts)) + " run  |  " + str(len(pt_counts)) + " benzersiz nokta"
+        ax3.set_title(title_str, color=TXT, fontsize=9)
         ax3.set_facecolor("#0e1525")
         ax3.tick_params(colors=TXT2, labelsize=7)
         ax3.legend(fontsize=8, facecolor=BG3, labelcolor=TXT)
@@ -1991,15 +2010,32 @@ class DoEApp(QMainWindow):
                 print(f"Tab refresh error ({tab.__class__.__name__}): {e}")
 
     def export_pdf(self):
-        """PDF rapor oluştur"""
+        """PDF rapor - siyah beyaz, KeepTogether"""
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import cm
         from reportlab.lib import colors
-        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                                        Table, TableStyle, Image as RLImage,
-                                        HRFlowable, PageBreak)
-        import io, tempfile
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            Image as RLImage, HRFlowable, PageBreak, KeepTogether)
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import io
+
+        # Font kayıt
+        TR  = "Helvetica"
+        TRB = "Helvetica-Bold"
+        TRM = "Courier"
+        for fname, fpath in [
+            ("DV",  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            ("DVB", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ]:
+            try:
+                if os.path.exists(fpath):
+                    pdfmetrics.registerFont(TTFont(fname, fpath))
+                    if fname == "DV":  TR  = "DV"
+                    else:              TRB = "DVB"; TRM = "DV"
+            except: pass
 
         path, _ = QFileDialog.getSaveFileName(
             self, "PDF Kaydet",
@@ -2011,195 +2047,243 @@ class DoEApp(QMainWindow):
             leftMargin=2*cm, rightMargin=2*cm,
             topMargin=2*cm, bottomMargin=2*cm)
 
-        styles = getSampleStyleSheet()
-        style_h1 = ParagraphStyle("H1", parent=styles["Heading1"],
-            fontSize=16, textColor=colors.HexColor("#002D62"),
-            spaceAfter=8)
-        style_h2 = ParagraphStyle("H2", parent=styles["Heading2"],
-            fontSize=12, textColor=colors.HexColor("#1F4E79"),
-            spaceAfter=6, spaceBefore=12)
-        style_body = ParagraphStyle("Body", parent=styles["Normal"],
-            fontSize=9, spaceAfter=4, leading=14)
-        style_gold = ParagraphStyle("Gold", parent=styles["Normal"],
-            fontSize=9, textColor=colors.HexColor("#996600"))
+        # ── Stil tanımları — tamamen siyah ───────────────────────────────────
+        BK = colors.black
+        GR = colors.HexColor("#555555")
+        LG = colors.HexColor("#EEEEEE")
+        MD = colors.HexColor("#CCCCCC")
+
+        s_h1  = ParagraphStyle("H1",  fontName=TRB, fontSize=16,
+                               textColor=BK, spaceAfter=6)
+        s_h2  = ParagraphStyle("H2",  fontName=TRB, fontSize=12,
+                               textColor=BK, spaceAfter=4, spaceBefore=10)
+        s_h3  = ParagraphStyle("H3",  fontName=TRB, fontSize=10,
+                               textColor=BK, spaceAfter=3, spaceBefore=6)
+        s_body= ParagraphStyle("Bod", fontName=TR,  fontSize=9,
+                               textColor=BK, spaceAfter=3, leading=13)
+        s_mono= ParagraphStyle("Mon", fontName=TRM, fontSize=8,
+                               textColor=BK, leading=11)
+
+        def C(txt):
+            return Paragraph(str(txt), ParagraphStyle(
+                "c", fontName=TR, fontSize=8, textColor=BK, leading=10))
+        def CB(txt):
+            return Paragraph(str(txt), ParagraphStyle(
+                "cb", fontName=TRB, fontSize=8, textColor=BK, leading=10))
+
+        def tbl(data, col_widths, has_header=True):
+            t = Table(data, colWidths=col_widths, repeatRows=1 if has_header else 0)
+            style = [
+                ("FONTNAME",     (0,0), (-1,-1), TR),
+                ("FONTSIZE",     (0,0), (-1,-1), 8),
+                ("TEXTCOLOR",    (0,0), (-1,-1), BK),
+                ("GRID",         (0,0), (-1,-1), 0.4, MD),
+                ("TOPPADDING",   (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING",(0,0), (-1,-1), 3),
+                ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+            ]
+            if has_header:
+                style += [
+                    ("BACKGROUND", (0,0), (-1,0), LG),
+                    ("FONTNAME",   (0,0), (-1,0), TRB),
+                    ("LINEBELOW",  (0,0), (-1,0), 0.8, BK),
+                ]
+            return t, TableStyle(style)
 
         story = []
         p = self.project
 
-        # Başlık
-        story.append(Paragraph("NGI DoE Analiz Raporu", style_h1))
-        story.append(HRFlowable(width="100%", thickness=2,
-                                color=colors.HexColor("#FFC600")))
+        # ── Başlık ───────────────────────────────────────────────────────────
+        story.append(Paragraph("NGI DoE Analiz Raporu", s_h1))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=BK))
         story.append(Spacer(1, 0.3*cm))
 
-        # Proje bilgisi
-        story.append(Paragraph("Proje Bilgileri", style_h2))
-        meta = [
-            ["Ürün",      p.product   or "—"],
-            ["Lot No.",   p.batch     or "—"],
-            ["Analist",   p.analyst   or "—"],
-            ["Tarih",     p.date      or "—"],
-            ["Tasarım",   p.design_type],
-            ["Run Sayısı", str(len(p.design_matrix)) if p.design_matrix is not None else "—"],
-            ["Faktör Sayısı", str(len(p.factors))],
+        # ── Proje bilgisi ────────────────────────────────────────────────────
+        meta_rows = [
+            [CB("Urun"),          C(p.product or "—")],
+            [CB("Lot No."),       C(p.batch   or "—")],
+            [CB("Analist"),       C(p.analyst or "—")],
+            [CB("Tarih"),         C(p.date    or "—")],
+            [CB("Tasarim"),       C(p.design_type)],
+            [CB("Run Sayisi"),    C(str(len(p.design_matrix))
+                                   if p.design_matrix is not None else "—")],
+            [CB("Faktor Sayisi"), C(str(len(p.factors)))],
         ]
-        t = Table(meta, colWidths=[4*cm, 12*cm])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#E8F0F8")),
-            ("FONTNAME",   (0,0), (0,-1), "Helvetica-Bold"),
-            ("FONTSIZE",   (0,0), (-1,-1), 9),
-            ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#CCCCCC")),
-            ("ROWBACKGROUNDS", (0,0), (-1,-1),
-             [colors.white, colors.HexColor("#F8F8F8")]),
+        mt, ms = tbl(meta_rows, [4*cm, 12*cm], has_header=False)
+        mt.setStyle(ms)
+        story.append(KeepTogether([
+            Paragraph("Proje Bilgileri", s_h2),
+            mt, Spacer(1, 0.3*cm)
         ]))
-        story.append(t)
-        story.append(Spacer(1, 0.4*cm))
 
-        # Faktörler tablosu
-        story.append(Paragraph("Faktörler", style_h2))
-        fdata = [["Faktör", "Tip", "Alt", "Merkez", "Üst", "Birim"]]
+        # ── Faktörler ────────────────────────────────────────────────────────
+        f_rows = [[CB(h) for h in
+                   ["Faktor","Tip","Alt","Merkez","Ust","Birim"]]]
         for f in p.factors:
-            fdata.append([
-                f["name"],
-                "Sürekli" if f["type"]=="continuous" else "Kategorik",
-                f"{f['low']:.4f}", f"{f.get('mid',(f['low']+f['high'])/2):.4f}",
-                f"{f['high']:.4f}", f.get("unit","—")])
-        ft = Table(fdata, colWidths=[4.5*cm,3*cm,2*cm,2*cm,2*cm,2.5*cm])
-        ft.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F4E79")),
-            ("TEXTCOLOR", (0,0),(-1,0), colors.white),
-            ("FONTNAME",  (0,0),(-1,0), "Helvetica-Bold"),
-            ("FONTSIZE",  (0,0),(-1,-1), 9),
-            ("GRID",      (0,0),(-1,-1), 0.5, colors.HexColor("#CCCCCC")),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1),
-             [colors.white, colors.HexColor("#F8F8F8")]),
+            f_rows.append([
+                C(f["name"]),
+                C("Surekli" if f["type"]=="continuous" else "Kategorik"),
+                C(f"{f['low']:.4f}"),
+                C(f"{f.get('mid',(f['low']+f['high'])/2):.4f}"),
+                C(f"{f['high']:.4f}"),
+                C(f.get("unit","—"))])
+        ft, fs = tbl(f_rows, [4.5*cm,3*cm,2*cm,2*cm,2*cm,2.5*cm])
+        ft.setStyle(fs)
+        story.append(KeepTogether([
+            Paragraph("Faktorler", s_h2),
+            ft, Spacer(1, 0.3*cm)
         ]))
-        story.append(ft)
-        story.append(Spacer(1, 0.4*cm))
 
-        # Tasarım matrisi + sonuçlar
+        # ── Tasarım matrisi ──────────────────────────────────────────────────
         if p.design_matrix is not None:
-            story.append(Paragraph("Tasarım Matrisi & Ölçüm Sonuçları", style_h2))
-            df = p.build_response_table()
+            df2 = p.build_response_table()
             show_cols = [c for c in p.design_matrix.columns
-                        if not c.endswith("_coded")]
-            all_cols = show_cols + p.responses
-            headers = [RESPONSE_LABELS.get(c,c) for c in all_cols]
-            tdata = [headers]
-            for ri in range(len(df)):
-                row_data = []
+                         if not c.endswith("_coded")]
+            all_cols  = show_cols + p.responses
+            headers   = [RESPONSE_LABELS.get(c,c) for c in all_cols]
+            t_rows    = [[CB(h) for h in headers]]
+            for ri in range(len(df2)):
+                row_d = []
                 for col in all_cols:
-                    if col in df.columns:
-                        val = df.iloc[ri][col]
-                        if col == "Run": row_data.append(str(int(val)))
-                        elif isinstance(val,float): row_data.append(f"{val:.3f}")
-                        else: row_data.append(str(val))
+                    if col in df2.columns:
+                        val = df2.iloc[ri][col]
+                        txt = (str(int(val)) if col=="Run"
+                               else f"{val:.3f}" if isinstance(val,float)
+                               else str(val))
                     else:
                         v = p.run_results.get(ri,{}).get(col,"—")
-                        row_data.append(f"{v:.3f}" if isinstance(v,float) else str(v))
-                tdata.append(row_data)
-            col_w = 16*cm / max(len(all_cols),1)
-            mt = Table(tdata, colWidths=[col_w]*len(all_cols))
-            mt.setStyle(TableStyle([
-                ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F4E79")),
-                ("TEXTCOLOR", (0,0),(-1,0), colors.white),
-                ("FONTNAME",  (0,0),(-1,0), "Helvetica-Bold"),
-                ("FONTSIZE",  (0,0),(-1,-1), 7),
-                ("GRID",      (0,0),(-1,-1), 0.3, colors.HexColor("#CCCCCC")),
-                ("ROWBACKGROUNDS",(0,1),(-1,-1),
-                 [colors.white, colors.HexColor("#F8F8F8")]),
+                        txt = f"{v:.3f}" if isinstance(v,float) else str(v)
+                    row_d.append(C(txt))
+                t_rows.append(row_d)
+            cw = 16*cm / max(len(all_cols),1)
+            dm, dms = tbl(t_rows, [cw]*len(all_cols))
+            dm.setStyle(dms)
+            story.append(KeepTogether([
+                Paragraph("Tasarim Matrisi ve Olcum Sonuclari", s_h2),
+                dm, Spacer(1, 0.3*cm)
             ]))
-            story.append(mt)
 
-        # Model sonuçları
+        # ── Model sonuçları ──────────────────────────────────────────────────
         if p.model_results:
             story.append(PageBreak())
-            story.append(Paragraph("Model Sonuçları", style_h2))
+            story.append(Paragraph("Model Sonuclari", s_h2))
             for resp, model in p.model_results.items():
-                lbl = RESPONSE_LABELS.get(resp,resp)
-                story.append(Paragraph(f"<b>{lbl}</b>", style_gold))
+                lbl = RESPONSE_LABELS.get(resp, resp)
+                block = [Paragraph(lbl, s_h3)]
                 try:
-                    r2 = model.rsquared; r2a = model.rsquared_adj
+                    r2   = model.rsquared
+                    r2a  = model.rsquared_adj
                     rmse = float(np.sqrt(model.mse_resid)) if model.mse_resid else 0
-                    summary_data = [
-                        ["R²", f"{r2:.4f}", "Adj R²", f"{r2a:.4f}"],
-                        ["RMSE", f"{rmse:.4f}", "N", str(int(model.nobs))],
-                        ["F-stat", f"{model.fvalue:.3f}", "p", f"{model.f_pvalue:.4f}"],
+                    s_rows = [
+                        [CB("R2"),     C(f"{r2:.4f}"),
+                         CB("Adj R2"), C(f"{r2a:.4f}")],
+                        [CB("RMSE"),   C(f"{rmse:.4f}"),
+                         CB("N"),      C(str(int(model.nobs)))],
+                        [CB("F-stat"), C(f"{model.fvalue:.3f}"),
+                         CB("p"),      C(f"{model.f_pvalue:.4f}")],
                     ]
-                    st = Table(summary_data, colWidths=[3*cm,3*cm,3*cm,3*cm])
-                    st.setStyle(TableStyle([
-                        ("FONTSIZE",(0,0),(-1,-1),8),
-                        ("GRID",(0,0),(-1,-1),0.3,colors.HexColor("#CCCCCC")),
-                        ("BACKGROUND",(0,0),(0,-1),colors.HexColor("#E8F0F8")),
-                        ("BACKGROUND",(2,0),(2,-1),colors.HexColor("#E8F0F8")),
-                    ]))
-                    story.append(st)
+                    st, ss = tbl(s_rows,[3*cm,3*cm,3*cm,3*cm], has_header=False)
+                    st.setStyle(ss)
+                    block.append(st)
+                    block.append(Spacer(1,0.2*cm))
                 except: pass
-                story.append(Spacer(1, 0.2*cm))
 
                 # ANOVA
                 try:
-                    from statsmodels.stats.anova import anova_lm
                     anova = anova_lm(model, typ=2)
-                    anova_data = [["Kaynak","df","SS","MS","F","p"]]
+                    a_rows = [[CB(h) for h in
+                               ["Kaynak","df","SS","MS","F","p"]]]
                     for idx2, row2 in anova.iterrows():
-                        df_v = row2.get("df",np.nan)
-                        ss_v = row2.get("sum_sq",np.nan)
-                        ms_v = ss_v/df_v if (not math.isnan(ss_v) and df_v and df_v>0) else np.nan
-                        f_v  = row2.get("F",np.nan)
-                        p_v  = row2.get("PR(>F)",np.nan)
-                        def fmt(v): return "—" if isinstance(v,float) and math.isnan(v) else f"{v:.4f}"
-                        anova_data.append([
-                            str(idx2),
-                            str(int(df_v)) if not math.isnan(df_v) else "—",
-                            fmt(ss_v), fmt(ms_v), fmt(f_v), fmt(p_v)])
-                    at = Table(anova_data,
-                              colWidths=[5*cm,1.5*cm,2*cm,2*cm,2*cm,2*cm])
-                    at.setStyle(TableStyle([
-                        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1F4E79")),
-                        ("TEXTCOLOR", (0,0),(-1,0),colors.white),
-                        ("FONTNAME",  (0,0),(-1,0),"Helvetica-Bold"),
-                        ("FONTSIZE",  (0,0),(-1,-1),8),
-                        ("GRID",      (0,0),(-1,-1),0.3,colors.HexColor("#CCCCCC")),
-                        ("ROWBACKGROUNDS",(0,1),(-1,-1),
-                         [colors.white,colors.HexColor("#F8F8F8")]),
-                    ]))
-                    story.append(at)
+                        dv = row2.get("df",np.nan)
+                        sv = row2.get("sum_sq",np.nan)
+                        mv = sv/dv if (not math.isnan(sv) and dv and dv>0) else np.nan
+                        fv = row2.get("F",np.nan)
+                        pv = row2.get("PR(>F)",np.nan)
+                        def fmt(v):
+                            return "—" if (isinstance(v,float) and
+                                           math.isnan(v)) else f"{v:.4f}"
+                        a_rows.append([
+                            C(str(idx2)),
+                            C(str(int(dv)) if not math.isnan(dv) else "—"),
+                            C(fmt(sv)), C(fmt(mv)),
+                            C(fmt(fv)), C(fmt(pv))])
+                    at, ats = tbl(a_rows,[5*cm,1.5*cm,2*cm,2*cm,2*cm,2*cm])
+                    at.setStyle(ats)
+                    block.append(at)
+                    block.append(Spacer(1,0.3*cm))
                 except: pass
-                story.append(Spacer(1, 0.4*cm))
+                story.append(KeepTogether(block))
 
-        # Optimizasyon sonucu
+        # ── Optimizasyon ─────────────────────────────────────────────────────
         opt_text = self.tab5.txt_opt_result.toPlainText()
         if opt_text and "─" in opt_text:
-            story.append(PageBreak())
-            story.append(Paragraph("Optimizasyon Sonucu", style_h2))
+            block = [Paragraph("Optimizasyon Sonucu", s_h2)]
             for line in opt_text.split("\n"):
-                story.append(Paragraph(
-                    line.replace(" ","&nbsp;"),
-                    ParagraphStyle("Mono", parent=styles["Normal"],
-                        fontSize=8, fontName="Courier", leading=12)))
+                clean = (line.replace("─","—").replace("µ","u")
+                             .replace("≤","<=").replace("≥",">="))
+                block.append(Paragraph(clean.replace(" ","&nbsp;"), s_mono))
+            story.append(KeepTogether(block))
 
-        # Grafikleri kaydet
+        # ── Grafikler — siyah beyaz ──────────────────────────────────────────
         story.append(PageBreak())
-        story.append(Paragraph("Grafikler", style_h2))
+        story.append(Paragraph("Grafikler", s_h2))
 
-        for fig_obj, title in [
-            (self.tab3.fig_analysis, "Model Analiz Grafikleri"),
-            (self.tab4.fig_surf,     "Response Surface"),
-            (self.tab6.fig,          "Tasarım Uzayı"),
+        for fig_obj, title, canvas_obj in [
+            (self.tab3.fig_analysis, "Model Analiz Grafikleri",
+             self.tab3.canvas_analysis),
+            (self.tab4.fig_surf,     "Response Surface",
+             self.tab4.canvas_surf),
+            (self.tab6.fig,          "Tasarim Uzayi",
+             self.tab6.canvas),
         ]:
             try:
+                # Arka planı beyaza çevir, tüm renkleri siyahlaştır
+                orig_fc = fig_obj.get_facecolor()
+                fig_obj.set_facecolor("white")
+                ax_states = []
+                for ax in fig_obj.get_axes():
+                    ax_states.append({
+                        "fc":   ax.get_facecolor(),
+                        "tc":   [(sp, sp.get_color())
+                                 for sp in ax.spines.values()],
+                        "xlc":  ax.xaxis.label.get_color(),
+                        "ylc":  ax.yaxis.label.get_color(),
+                        "ttc":  ax.title.get_color(),
+                    })
+                    ax.set_facecolor("white")
+                    for sp in ax.spines.values():
+                        sp.set_color("#999999")
+                    ax.tick_params(colors="black", labelsize=8)
+                    ax.xaxis.label.set_color("black")
+                    ax.yaxis.label.set_color("black")
+                    ax.title.set_color("black")
+
                 buf = io.BytesIO()
-                fig_obj.savefig(buf, format="png", dpi=120,
-                               facecolor=fig_obj.get_facecolor(),
-                               bbox_inches="tight")
+                fig_obj.savefig(buf, format="png", dpi=150,
+                               facecolor="white", bbox_inches="tight")
+
+                # Orijinal temaya geri döndür
+                fig_obj.set_facecolor(orig_fc)
+                for ax, state in zip(fig_obj.get_axes(), ax_states):
+                    ax.set_facecolor(state["fc"])
+                    for sp, col in state["tc"]:
+                        sp.set_color(col)
+                    ax.tick_params(colors=TXT2)
+                    ax.xaxis.label.set_color(state["xlc"])
+                    ax.yaxis.label.set_color(state["ylc"])
+                    ax.title.set_color(state["ttc"])
+                try: canvas_obj.draw()
+                except: pass
+
                 buf.seek(0)
                 img = RLImage(buf, width=16*cm, height=10*cm)
-                story.append(Paragraph(f"<b>{title}</b>", style_gold))
-                story.append(img)
-                story.append(Spacer(1, 0.4*cm))
+                story.append(KeepTogether([
+                    Paragraph(title, s_h3),
+                    img,
+                    Spacer(1, 0.4*cm)
+                ]))
             except Exception as e:
-                print(f"Grafik PDF hatası ({title}): {e}")
+                print(f"Grafik PDF hatasi ({title}): {e}")
 
         try:
             doc.build(story)
@@ -2210,10 +2294,10 @@ class DoEApp(QMainWindow):
                 subprocess.Popen(["open", path])
             else:
                 subprocess.Popen(["xdg-open", path])
-            QMessageBox.information(self, "✔", f"PDF oluşturuldu:\n{path}")
+            QMessageBox.information(self, "PDF",
+                "PDF olusturuldu:\n" + path)
         except Exception as e:
-            QMessageBox.critical(self, "PDF Hatası", str(e))
-
+            QMessageBox.critical(self, "PDF Hatasi", str(e))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
