@@ -2272,23 +2272,19 @@ class DoEApp(QMainWindow):
                 ]))
                 continue
 
-            # Arka planı beyaza çevir
-            orig_fc = fig_obj.get_facecolor()
+            # Arka planı beyaza çevir — sadece facecolor ve label renkleri
+            orig_fig_fc = fig_obj.get_facecolor()
             ax_states = []
             try:
                 fig_obj.set_facecolor("white")
                 for ax in fig_obj.get_axes():
                     ax_states.append({
                         "fc":  ax.get_facecolor(),
-                        "tc":  [(sp, sp.get_color())
-                                for sp in ax.spines.values()],
                         "xlc": ax.xaxis.label.get_color(),
                         "ylc": ax.yaxis.label.get_color(),
                         "ttc": ax.title.get_color(),
                     })
                     ax.set_facecolor("white")
-                    for sp in ax.spines.values():
-                        sp.set_color("#999999")
                     ax.tick_params(colors="black", labelsize=8)
                     ax.xaxis.label.set_color("black")
                     ax.yaxis.label.set_color("black")
@@ -2307,17 +2303,15 @@ class DoEApp(QMainWindow):
             except Exception as e:
                 story.append(KeepTogether([
                     Paragraph(title_ascii, s_h3),
-                    Paragraph(tr2ascii(f"Grafik kaydedilemedi: {e}"), s_body),
+                    Paragraph(tr2ascii("Grafik kaydedilemedi: " + str(e)), s_body),
                     Spacer(1, 0.3*cm)
                 ]))
             finally:
-                # Orijinal temaya her koşulda geri döndür
+                # Koyu temaya geri döndür
                 try:
-                    fig_obj.set_facecolor(orig_fc)
+                    fig_obj.set_facecolor(orig_fig_fc)
                     for ax, state in zip(fig_obj.get_axes(), ax_states):
                         ax.set_facecolor(state["fc"])
-                        for sp, col in state["tc"]:
-                            sp.set_color(col)
                         ax.tick_params(colors=TXT2)
                         ax.xaxis.label.set_color(state["xlc"])
                         ax.yaxis.label.set_color(state["ylc"])
