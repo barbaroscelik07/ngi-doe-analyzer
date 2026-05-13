@@ -2270,20 +2270,20 @@ class DoEApp(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════════════════
         # ICERIK
         # ═══════════════════════════════════════════════════════════════════════════════
-        story.append(H(0, "Icerik"))
+        story.append(H(0, "İçerik"))
         story.append(HR())
         icerik = [
-            ["1.", "Genel Bakis ve Amac", "3"],
-            ["2.", "Kurulum ve Baslangic", "3"],
+            ["1.", "Genel Bakış ve Amaç", "3"],
+            ["2.", "Kurulum ve Başlangıç", "3"],
             ["3.", "DoE Metodolojisi - Temel Kavramlar", "4"],
-            ["4.", "Sekme 1 - Faktorler ve Tasarim", "5"],
+            ["4.", "Sekme 1 - Faktörler ve Tasarım", "5"],
             ["5.", "Sekme 2 - Tasarım Matrisi ve Veri Girişi", "7"],
             ["6.", "Sekme 3 - Model ve ANOVA", "8"],
             ["7.", "Sekme 4 - Response Surface", "10"],
             ["8.", "Sekme 5 - Optimizasyon", "11"],
-            ["9.", "Sekme 6 - Tasarim Uzayi", "12"],
+            ["9.", "Sekme 6 - Tasarım Uzayı", "12"],
             ["10.", "PDF Rapor", "13"],
-            ["11.", "Örnek Çalışma - Adim Adim", "13"],
+            ["11.", "Örnek Çalışma - Adım Adım", "13"],
             ["12.", "Sıkça Sorulan Sorular", "16"],
         ]
         ic_tbl = tbl(
@@ -2295,7 +2295,7 @@ class DoEApp(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════════════════
         # 1. GENEL BAKIS
         # ═══════════════════════════════════════════════════════════════════════════════
-        story.append(H(0, "1. Genel Bakis ve Amac"))
+        story.append(H(0, "1. Genel Bakış ve Amaç"))
         story.append(HR())
         story.append(P(
             "NGI DoE Analyzer, inhale edilebilir ilac urunleri gelistirme surecinde "
@@ -2336,7 +2336,7 @@ class DoEApp(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════════════════
         # 2. KURULUM
         # ═══════════════════════════════════════════════════════════════════════════════
-        story.append(H(0, "2. Kurulum ve Baslangic"))
+        story.append(H(0, "2. Kurulum ve Başlangıç"))
         story.append(HR())
         story.append(H(1, "Sistem Gereksinimleri"))
         req_tbl = tbl([
@@ -2436,7 +2436,7 @@ class DoEApp(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════════════════
         # 4. SEKME 1
         # ═══════════════════════════════════════════════════════════════════════════════
-        story.append(H(0, "4. Sekme 1 - Faktorler ve Tasarim"))
+        story.append(H(0, "4. Sekme 1 - Faktörler ve Tasarım"))
         story.append(HR())
         story.append(P(
             "Bu sekme calismanizin kurulum sayfasidir. Tasarim tipini, formulasyon "
@@ -2610,7 +2610,7 @@ class DoEApp(QMainWindow):
         story.append(tbl(anova_tbl, [2.5*cm, 6*cm, 6.5*cm]))
         story.append(SP(0.2))
         
-        story.append(H(1, "Model Ozeti"))
+        story.append(H(1, "Model Özeti"))
         story.append(SP(0.1))
         ozet_tbl = [
             [B("Metrik"), B("Anlami"), B("Iyi Deger")],
@@ -2686,7 +2686,7 @@ class DoEApp(QMainWindow):
             "aldigi degerleri gosterir. Derin çukur veya yüksek tepe, o bolgenin "
             "ekstrem deger verdigi anlamina gelir."
         ))
-        story.append(H(2, "Kontur Haritasi"))
+        story.append(H(2, "Kontur Haritası"))
         story.append(P(
             "Aynı bilginin tepeden görünümü. Renk skalasına göre "
             "(soğuk renk = düşük, sıcak renk = yüksek) hedef bölgeyi bulun. "
@@ -2766,7 +2766,7 @@ class DoEApp(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════════════════
         # 9. SEKME 6
         # ═══════════════════════════════════════════════════════════════════════════════
-        story.append(H(0, "9. Sekme 6 - Tasarim Uzayi"))
+        story.append(H(0, "9. Sekme 6 - Tasarım Uzayı"))
         story.append(HR())
         story.append(P(
             "Tasarım uzayı görüntüsü, hangi faktor kombinasyonlarinda deney "
@@ -2839,7 +2839,7 @@ class DoEApp(QMainWindow):
             story.append(Bul(bolum))
         story.append(SP(0.2))
         
-        story.append(H(1, "Onemli Notlar"))
+        story.append(H(1, "Önemli Notlar"))
         for not_ in [
             "Grafikler PDF'e eklenebilmesi icin once Sekme 3, 4 ve 6'da grafiklerin cizirilmesi gerekir.",
             "Grafik çizdirilmemişse PDF'te 'Bu grafik henuz olusturulmadi' yazısı görünür.",
@@ -2861,7 +2861,7 @@ class DoEApp(QMainWindow):
         ))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 1 - Tasarım Kurulumu (Sekme 1)"))
+        story.append(H(1, "Adım 1 - Tasarım Kurulumu (Sekme 1)"))
         story.append(SP(0.1))
         setup_tbl = [
             [B("Alan"), B("Girilecek Deger")],
@@ -2877,7 +2877,7 @@ class DoEApp(QMainWindow):
         story.append(P("'Tasarım Matrisini Oluştur' butonuna basin → 15 run cikar."))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 2 - Veri Girişi (Sekme 2)"))
+        story.append(H(1, "Adım 2 - Veri Girişi (Sekme 2)"))
         story.append(P("NGI ölçüm sonuçlarını tabloya girin:"))
         story.append(SP(0.1))
         veri_tbl = [
@@ -2893,7 +2893,7 @@ class DoEApp(QMainWindow):
         story.append(tbl(veri_tbl, [2*cm, 5*cm, 5*cm]))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 3 - Model Fit (Sekme 3)"))
+        story.append(H(1, "Adım 3 - Model Fit (Sekme 3)"))
         for i, adim in enumerate([
             "Yanit acilir menusu: MMAD (um) secin",
             "'Model Fit' butonuna basin",
@@ -2904,7 +2904,7 @@ class DoEApp(QMainWindow):
             story.append(Paragraph(f"{i}. {adim}", s_bullet))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 4 - Response Surface (Sekme 4)"))
+        story.append(H(1, "Adım 4 - Response Surface (Sekme 4)"))
         for i, adim in enumerate([
             "Yanit: MMAD (um)",
             "X ekseni: Gliserin",
@@ -2915,7 +2915,7 @@ class DoEApp(QMainWindow):
             story.append(Paragraph(f"{i}. {adim}", s_bullet))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 5 - Optimizasyon (Sekme 5)"))
+        story.append(H(1, "Adım 5 - Optimizasyon (Sekme 5)"))
         for i, adim in enumerate([
             "MMAD (um) → 'Minimize Et' secin",
             "FPF <5um (%) → 'Maximize Et' secin",
@@ -2926,7 +2926,7 @@ class DoEApp(QMainWindow):
             story.append(Paragraph(f"{i}. {adim}", s_bullet))
         story.append(SP(0.2))
         
-        story.append(H(1, "Adim 6 - PDF Rapor"))
+        story.append(H(1, "Adım 6 - PDF Rapor"))
         story.append(P(
             "Önce Sekme 4 ve 6'da grafikleri cizin. Sonra baslik cubugundaki "
             "'PDF Rapor' butonuna basin, kayit yeri secin."
