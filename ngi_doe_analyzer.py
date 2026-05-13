@@ -2104,6 +2104,9 @@ class DoEApp(QMainWindow):
         btn_pdf = make_btn("📄 PDF Rapor", "rgba(60,20,90,0.8)", 32)
         btn_pdf.clicked.connect(self.export_pdf)
         hl.addWidget(btn_pdf)
+        btn_kl = make_btn("📖 Klavuz", "rgba(10,50,80,0.8)", 32)
+        btn_kl.clicked.connect(self.export_klavuz)
+        hl.addWidget(btn_kl)
         ml.addWidget(hdr)
 
         self.tabs = QTabWidget()
@@ -2130,6 +2133,894 @@ class DoEApp(QMainWindow):
                 tab.refresh()
             except Exception as e:
                 print(f"Tab refresh error ({tab.__class__.__name__}): {e}")
+
+    def export_klavuz(self):
+        """Kullanim kilavuzu PDF olustur"""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            HRFlowable, PageBreak, KeepTogether
+        )
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import io as _io
+
+        # Font kayıt
+        TR = "Helvetica"; TRB = "Helvetica-Bold"; TRM = "Courier"
+        for fname, fpath in [
+            ("KDV",  resource_path("DejaVuSans.ttf")),
+            ("KDV",  "C:/Windows/Fonts/arial.ttf"),
+            ("KDV",  "C:/Windows/Fonts/tahoma.ttf"),
+            ("KDVB", resource_path("DejaVuSans-Bold.ttf")),
+            ("KDVB", "C:/Windows/Fonts/arialbd.ttf"),
+            ("KDVB", "C:/Windows/Fonts/tahomabd.ttf"),
+        ]:
+            try:
+                if "KDV" in pdfmetrics.getRegisteredFontNames() and fname=="KDV": continue
+                if "KDVB" in pdfmetrics.getRegisteredFontNames() and fname=="KDVB": continue
+                if os.path.exists(fpath):
+                    pdfmetrics.registerFont(TTFont(fname, fpath))
+                    if fname == "KDV":  TR = "KDV"; TRM = "KDV"
+                    else:               TRB = "KDVB"
+            except: pass
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Klavuz Kaydet",
+            f"NGI_DoE_Klavuz.pdf", "PDF (*.pdf)")
+        if not path: return
+
+        doc = SimpleDocTemplate(path, pagesize=A4,
+            leftMargin=2.5*cm, rightMargin=2.5*cm,
+            topMargin=2.5*cm, bottomMargin=2.5*cm)
+
+        NAVY = colors.HexColor("#002D62")
+        GOLD = colors.HexColor("#996600")
+        BK   = colors.black
+        GR   = colors.HexColor("#444444")
+        LG   = colors.HexColor("#F0F4F8")
+        MD   = colors.HexColor("#CCCCCC")
+        BLU  = colors.HexColor("#1F4E79")
+
+        s_title = ParagraphStyle("title", fontName=TRB, fontSize=22,
+            textColor=NAVY, spaceAfter=6, leading=26)
+        s_sub   = ParagraphStyle("sub", fontName=TR, fontSize=13,
+            textColor=GR, spaceAfter=20, leading=16)
+        s_h1    = ParagraphStyle("h1", fontName=TRB, fontSize=15,
+            textColor=NAVY, spaceAfter=6, spaceBefore=16, leading=18)
+        s_h2    = ParagraphStyle("h2", fontName=TRB, fontSize=12,
+            textColor=BLU, spaceAfter=4, spaceBefore=12, leading=15)
+        s_h3    = ParagraphStyle("h3", fontName=TRB, fontSize=10,
+            textColor=GOLD, spaceAfter=3, spaceBefore=8, leading=13)
+        s_body  = ParagraphStyle("body", fontName=TR, fontSize=9,
+            textColor=BK, spaceAfter=4, leading=14)
+        s_note  = ParagraphStyle("note", fontName=TR, fontSize=8,
+            textColor=GR, spaceAfter=4, leading=12,
+            leftIndent=12, borderPad=4)
+        s_bold  = ParagraphStyle("bold", fontName=TRB, fontSize=9,
+            textColor=BK, spaceAfter=3, leading=13)
+        s_bullet= ParagraphStyle("bul", fontName=TR, fontSize=9,
+            textColor=BK, spaceAfter=3, leading=13,
+            leftIndent=16, bulletIndent=6)
+
+        def H(lvl, txt):
+            return Paragraph(txt, [s_h1,s_h2,s_h3][lvl])
+        def P(txt): return Paragraph(txt, s_body)
+        def B(txt): return Paragraph(txt, s_bold)
+        def Note(txt): return Paragraph("Not: " + txt, s_note)
+        def Bul(txt): return Paragraph("- " + txt, s_bullet)
+        def SP(n=0.3): return Spacer(1, n*cm)
+        def HR(): return HRFlowable(width="100%", thickness=0.5, color=MD)
+
+        def tbl(data, widths, header=True):
+            t = Table(data, colWidths=widths, repeatRows=1 if header else 0)
+            style = [
+                ("FONTNAME",      (0,0), (-1,-1), TR),
+                ("FONTSIZE",      (0,0), (-1,-1), 8),
+                ("TEXTCOLOR",     (0,0), (-1,-1), BK),
+                ("GRID",          (0,0), (-1,-1), 0.3, MD),
+                ("TOPPADDING",    (0,0), (-1,-1), 4),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                ("ROWBACKGROUNDS",(0, 1 if header else 0), (-1,-1),
+                 [colors.white, LG]),
+            ]
+            if header:
+                style += [
+                    ("BACKGROUND", (0,0), (-1,0), BLU),
+                    ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+                    ("FONTNAME",   (0,0), (-1,0), TRB),
+                    ("LINEBELOW",  (0,0), (-1,0), 1, NAVY),
+                ]
+            t.setStyle(TableStyle(style))
+            return t
+
+        # Font debug satiri
+        debug_style = ParagraphStyle("dbg", fontName=TR, fontSize=7,
+            textColor=colors.HexColor("#AAAAAA"))
+
+        story = []
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # KAPAK
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(SP(3))
+        story.append(Paragraph("NGI DoE Analyzer", s_title))
+        story.append(HRFlowable(width="100%", thickness=3, color=GOLD))
+        story.append(SP(0.4))
+        story.append(Paragraph("Kullanim Kilavuzu", s_sub))
+        story.append(SP(0.2))
+        story.append(Paragraph(
+            "Farmasotik Formulasyon Optimizasyonu icin "
+            "Deney Tasarimi (Design of Experiments) Programi",
+            s_body))
+        story.append(SP(1))
+        
+        kapak_tbl = tbl([
+            [B("Surum"),    P("v3.0")],
+            [B("Tarih"),    P("Mayis 2026")],
+            [B("Platform"), P("Windows 10/11 (64-bit)")],
+            [B("Dil"),      P("Turkce")],
+        ], [4*cm, 10*cm], header=False)
+        story.append(kapak_tbl)
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # ICERIK
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "Icerik"))
+        story.append(HR())
+        icerik = [
+            ["1.", "Genel Bakis ve Amac", "3"],
+            ["2.", "Kurulum ve Baslangic", "3"],
+            ["3.", "DoE Metodolojisi - Temel Kavramlar", "4"],
+            ["4.", "Sekme 1 - Faktorler ve Tasarim", "5"],
+            ["5.", "Sekme 2 - Tasarim Matrisi ve Veri Girisi", "7"],
+            ["6.", "Sekme 3 - Model ve ANOVA", "8"],
+            ["7.", "Sekme 4 - Response Surface", "10"],
+            ["8.", "Sekme 5 - Optimizasyon", "11"],
+            ["9.", "Sekme 6 - Tasarim Uzayi", "12"],
+            ["10.", "PDF Rapor", "13"],
+            ["11.", "Ornek Calisma - Adim Adim", "13"],
+            ["12.", "Sikca Sorulan Sorular", "16"],
+        ]
+        ic_tbl = tbl(
+            [[P(a), P(b), P(c)] for a,b,c in icerik],
+            [1.5*cm, 12*cm, 2*cm], header=False)
+        story.append(ic_tbl)
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 1. GENEL BAKIS
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "1. Genel Bakis ve Amac"))
+        story.append(HR())
+        story.append(P(
+            "NGI DoE Analyzer, inhale edilebilir ilac urunleri gelistirme surecinde "
+            "formulasyon optimizasyonunu kolaylastirmak icin tasarlanmis bir masaustu "
+            "uygulamasidir. Next Generation Impactor (NGI) olcum sonuclarini girdi "
+            "olarak kullanan program, istatistiksel deney tasarimi (DoE) yontemleriyle "
+            "en az sayida NGI calismasi yaparak optimum formulasyona ulasmay "
+            "hedefler."
+        ))
+        story.append(SP())
+        
+        story.append(H(1, "Programin Sagladi Avantajlar"))
+        for avantaj in [
+            "Klasik 'bir degiskeni dene ve bekle' yontemine gore %60-80 daha az NGI calismasi",
+            "Hangi formulasyon faktorlerinin MMAD, FPF ve diger parametreleri etkiledigini istatistiksel olarak gosterir",
+            "Faktorler arasi etkilesimleri (interaction) ortaya cikarir",
+            "Optimum formulasyon icin sayisal oneri ve tahmin araligini hesaplar",
+            "Ph.Eur. 2.9.18, USP <601>, ICH Q8 ve EMA kilavuzlarina uygun metodoloji",
+        ]:
+            story.append(Bul(avantaj))
+        
+        story.append(SP())
+        story.append(H(1, "Hangi Durumlarda Kullanilir"))
+        tbl_data = [
+            [B("Senaryo"), B("Onerilir Tasarim"), B("Beklenen Run Sayisi")],
+            [P("6+ faktor, hangisi onemli bilinmiyor"),
+             P("Plackett-Burman"), P("8-12 run")],
+            [P("3-4 faktor, etkilesimler onemli"),
+             P("Full Factorial (2k)"), P("8-16 run")],
+            [P("2-4 faktor, optimum nokta aranyor"),
+             P("Central Composite (CCD)"), P("15-30 run")],
+            [P("3-4 faktor, sinir noktalari kritik"),
+             P("Box-Behnken (BBD)"), P("15-27 run")],
+        ]
+        story.append(tbl(tbl_data, [5*cm, 5*cm, 4*cm]))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 2. KURULUM
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "2. Kurulum ve Baslangic"))
+        story.append(HR())
+        story.append(H(1, "Sistem Gereksinimleri"))
+        req_tbl = tbl([
+            [B("Isletim Sistemi"), P("Windows 10 veya Windows 11 (64-bit)")],
+            [B("Disk Alani"),      P("Yaklasik 150 MB")],
+            [B("RAM"),             P("Minimum 4 GB (8 GB onerilir)")],
+            [B("Ekran Cozunurlugu"), P("Minimum 1280 x 720")],
+        ], [5*cm, 9*cm], header=False)
+        story.append(req_tbl)
+        story.append(SP())
+        
+        story.append(H(1, "Kurulum Adimlari"))
+        for i, adim in enumerate([
+            "GitHub releases sayfasindan NGI_DoE_Analyzer.exe dosyasini indirin.",
+            "Dosyayi istediginiz bir klasore kopyalayin (ornegin C:\\Program Files\\NGI_DoE).",
+            "NGI_DoE_Analyzer.exe dosyasina cift tiklayin.",
+            "Windows Defender uyarisi gorurseniz 'Daha fazla bilgi' > 'Yine de calistir' secin.",
+            "Program hazirdir - kurulum gerektirmez.",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        
+        story.append(SP())
+        story.append(Note(
+            "Program tek bir .exe dosyasindan olusur. Ek kurulum veya internet "
+            "baglantisi gerekmez. Tum hesaplamalar yerel olarak yapilir."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 3. DOE METODOLOJISI
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "3. DoE Metodolojisi - Temel Kavramlar"))
+        story.append(HR())
+        
+        story.append(H(1, "Temel Terimler"))
+        terimler = [
+            ["Faktor (X)", 
+             "Degistirdiginiz formulasyon parametresi. Ornek: Polisorbat 80 konsantrasyonu, pH, Gliserin orani."],
+            ["Yanit (Y)", 
+             "Olctugunuz NGI parametresi. Ornek: MMAD, FPF <5um, FPD."],
+            ["Run", 
+             "Tek bir formulasyon hazirlanip NGI'da olculen bir deney."],
+            ["Seviye", 
+             "Bir faktorun denenen degerleri. Alt (-1), orta (0), ust (+1)."],
+            ["Merkez Nokta", 
+             "Alt ve ust seviyelerin tam ortasindaki deger. Model egriselligini yakalar."],
+            ["Kodlanmis Degerler", 
+             "Faktor degerleri -1 ile +1 arasina donusturulur. Model hesaplamasinda kullanilir."],
+            ["Desirability", 
+             "0-1 arasi genel optimizasyon skoru. 1'e yakin = tum hedefler karsilaniyor."],
+            ["Response Surface", 
+             "Iki faktorun yanit degiskenine etkisini gosteren 3D yuzey veya 2D kontur haritasi."],
+            ["%95 Tahmin Araligi (PI)", 
+             "Gercek NGI olcumunun buyuk olasilikla bu aralikta cikacagini gosterir."],
+        ]
+        story.append(tbl(
+            [[B(a), P(b)] for a,b in terimler],
+            [4*cm, 11*cm], header=False))
+        story.append(SP())
+        
+        story.append(H(1, "Tasarim Tipleri"))
+        story.append(P(
+            "Program alti farkli tasarim tipini destekler. Hangi tasarimi "
+            "secmeniz gerektigini Sekme 1'deki Tasarim Rehberi de gosterir."
+        ))
+        story.append(SP(0.2))
+        tasarim_tbl = [
+            [B("Tasarim"), B("Ne zaman kullanilir"), B("Run"), B("Seviye")],
+            [P("Full Factorial (2k)"),
+             P("3 faktor altinda, tum etkilesimleri gormek istiyorsaniz"),
+             P("2^k"), P("2")],
+            [P("Fractional Factorial"),
+             P("5+ faktor taramasinda, run sayisini azaltmak istiyorsaniz"),
+             P("2^(k-p)"), P("2")],
+            [P("Central Composite (CCD)"),
+             P("2-4 faktorle optimum aramada, egrisel iliskiler bekliyorsaniz"),
+             P("~20-30"), P("5")],
+            [P("Box-Behnken (BBD)"),
+             P("3-4 faktorle optimumda, extreme kombinasyonlari istemiyorsaniz"),
+             P("~15-27"), P("3")],
+            [P("Plackett-Burman"),
+             P("5+ faktorun hangisinin onemli oldugunu bilmiyorsaniz"),
+             P("N=4k"), P("2")],
+            [P("OFAT"),
+             P("Referans calisma veya tek faktor izolasyonu icin"),
+             P("2k+1"), P("2")],
+        ]
+        story.append(tbl(tasarim_tbl, [4*cm, 7.5*cm, 2*cm, 1.5*cm]))
+        story.append(SP())
+        story.append(Note(
+            "Onerilen yaklasim: Once Plackett-Burman ile onemli faktorleri tarayin, "
+            "sonra CCD veya BBD ile optimum noktayi bulun. Bu kademeli yaklasim "
+            "toplam run sayisini minimize eder."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 4. SEKME 1
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "4. Sekme 1 - Faktorler ve Tasarim"))
+        story.append(HR())
+        story.append(P(
+            "Bu sekme calismanizin kurulum sayfasidir. Tasarim tipini, formulasyon "
+            "faktorlerini ve olcmek istediginiz yanit degiskenlerini burada tanimlarsiniz."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Proje Bilgileri"))
+        story.append(P(
+            "Urun adi, lot numarasi, analist adi ve tarih bilgilerini girin. "
+            "Bu bilgiler PDF raporun basliginda goruncektir. Bos birakabilirsiniz."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Tasarim Tipi Secimi"))
+        story.append(P(
+            "Acilir menuden tasarim tipini secin. Secim yaptiktan sonra "
+            "sag taraftaki Tasarim Rehberi paneli otomatik guncellenir:"
+        ))
+        for item in [
+            "Ne zaman kullanilmali",
+            "Kac run cikar (faktor sayisina gore dinamik hesap)",
+            "Avantaj ve dezavantajlari",
+            "Sonraki adim icin oneri",
+        ]:
+            story.append(Bul(item))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Faktor Tanimi"))
+        story.append(P(
+            "Her formulasyon degiskeniniz icin bir satir olusturun:"
+        ))
+        story.append(SP(0.1))
+        faktor_tbl = [
+            [B("Alan"), B("Aciklama"), B("Ornek")],
+            [P("Faktor Adi"), 
+             P("Degiskeninizin adi"), 
+             P("Polisorbat80")],
+            [P("Tip"), 
+             P("Surekli: sayisal deger alir\nKategorik: ornek nebulizor markasi"), 
+             P("Surekli")],
+            [P("Alt Seviye"), 
+             P("Deneyebileceginiz minimum deger"), 
+             P("0.01")],
+            [P("Merkez (opsiyonel)"), 
+             P("CCD ve BBD icin goruntulenir. Bos birakilirsa (Alt+Ust)/2 kullanilir"), 
+             P("0.055")],
+            [P("Ust Seviye"), 
+             P("Deneyebileceginiz maksimum deger"), 
+             P("0.10")],
+            [P("Birim"), 
+             P("Olcum birimi (raporda goruntulenir)"), 
+             P("%")],
+        ]
+        story.append(tbl(faktor_tbl, [3.5*cm, 7*cm, 4.5*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Yanit Degiskeni Secimi"))
+        story.append(P(
+            "Olcmek istediginiz NGI parametrelerini isaretleyin. "
+            "Birden fazla secebilirsiniz:"
+        ))
+        yanit_tbl = [
+            [B("Parametre"), B("Aciklama")],
+            [P("MMAD (um)"),    P("Medyan Aerodinamik Cap - ana etkinlik gostergesi")],
+            [P("GSD"),         P("Geometrik Standart Sapma - dagilim genisligi")],
+            [P("FPD <5um (mg)"), P("Fine Particle Dose - 5 um altindaki toplam doz")],
+            [P("FPF <5um (%)"), P("Fine Particle Fraction - yuzde ince parcacik fraksiyonu")],
+            [P("FPD <3um, FPD <1.5um"), P("Daha kucuk kesim boyutlari icin FPD")],
+            [P("FPF <3um, FPF <1.5um"), P("Daha kucuk kesim boyutlari icin FPF")],
+            [P("Metered Doz (mg)"), P("Olculen toplam doz")],
+            [P("Delivered Doz (mg)"), P("Iletilen doz")],
+        ]
+        story.append(tbl(yanit_tbl, [5*cm, 10*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Tasarim Matrisini Olustur"))
+        story.append(P(
+            "Tum bilgileri girdikten sonra 'Tasarim Matrisini Olustur' butonuna basin. "
+            "Program otomatik olarak Sekme 2'ye gecer ve kac run yapmaniz gerektigini gosterir."
+        ))
+        story.append(SP(0.1))
+        story.append(Note(
+            "Tasarim olusturulduktan sonra Sekme 1'e donup faktor veya tasarim degistirirseniz "
+            "girdiginiz olcum verileri sifirlanir. Once verileri Excel'e aktarmaniz onerilir."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 5. SEKME 2
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "5. Sekme 2 - Tasarim Matrisi ve Veri Girisi"))
+        story.append(HR())
+        story.append(P(
+            "Bu sekme, yapmaniz gereken deneylerin listesini ve olcum "
+            "sonucu giris alanlarini gosterir."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Tasarim Matrisi Tablosu"))
+        story.append(P(
+            "Tablo iki bolumden olusur:"
+        ))
+        for item in [
+            "Gri sutunlar: Run numarasi ve her run icin faktor degerleri (programin otomatik belirledigi). Bunlari degistiremezsiniz.",
+            "Sari sutunlar: Yanit degisken alanlari. NGI olcum sonuclari buraya girilir.",
+        ]:
+            story.append(Bul(item))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Veri Nasil Girilir"))
+        for i, adim in enumerate([
+            "Laboratuvarda her run icin belirtilen formulasyonu hazirlayin.",
+            "Her formulasyonu NGI ile olcun ve CITDAS analizi yapin.",
+            "Sekme 2'de ilgili run satirinin sari hucresine tiklayin.",
+            "MMAD, FPF veya diger parametreleri girin. Enter ile sonraki satira gecin.",
+            "Tum runlari girdikten sonra Sekme 3'e gecin.",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Excel'e Aktar"))
+        story.append(P(
+            "Tasarim matrisini ve girdiginiz olcum degerlerini Excel dosyasi olarak "
+            "kaydetmek icin 'Excel'e Aktar' butonunu kullanin. Bu ozellik:"
+        ))
+        for item in [
+            "Laboratuvarda kagit cikti olarak kullanmak icin idealdir",
+            "Olcum sonuclarini once Excel'e not edip sonra programa aktarmanizi saglar",
+            "Veri yedeklemesi amacli kullanilabilir",
+        ]:
+            story.append(Bul(item))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 6. SEKME 3
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "6. Sekme 3 - Model ve ANOVA"))
+        story.append(HR())
+        story.append(P(
+            "Veri girisi tamamlandiktan sonra bu sekmede istatistiksel model kurulur "
+            "ve hangi faktorlerin anlamli oldugu belirlenir."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Model Fit"))
+        story.append(P(
+            "Yanit degiskenini secip 'Model Fit' butonuna basin. "
+            "Program secilen yanit icin OLS (En Kucuk Kareler) regresyon modeli kurar."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "ANOVA Tablosu"))
+        story.append(P("ANOVA tablosundaki her sutunun anlami:"))
+        story.append(SP(0.1))
+        anova_tbl = [
+            [B("Sutun"), B("Anlami"), B("Neye Dikkat Edin")],
+            [P("Kaynak"),  P("Faktor veya etkilesim terimi"),
+             P("X1=Faktor 1, X1_x_X2=Etkilesim")],
+            [P("df"),      P("Serbestlik derecesi - kac bagimsiz bilgi tasiyor"),
+             P("Genellikle 1")],
+            [P("sum_sq"),  P("Kareler toplami - yanittaki degisime katkisi"),
+             P("Buyuk deger = guclu etki")],
+            [P("mean_sq"), P("Ortalama kare = sum_sq / df"),
+             P("Faktorleri karsilastirmak icin")],
+            [P("F"),       P("F istatistigi - etkinin gurultuye orani"),
+             P("Yuksek F = anlamli faktor")],
+            [P("PR(>F)"),  P("p degeri - istatistiksel anlamlilik"),
+             P("p < 0.05 ise yesil (anlamli)")],
+        ]
+        story.append(tbl(anova_tbl, [2.5*cm, 6*cm, 6.5*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Model Ozeti"))
+        story.append(SP(0.1))
+        ozet_tbl = [
+            [B("Metrik"), B("Anlami"), B("Iyi Deger")],
+            [P("R2"),      P("Modelin veriyi ne kadar acikladi"),           P("0.7 - 0.95")],
+            [P("Adj R2"),  P("Faktor sayisina gore duzeltilmis R2"),         P("R2'ye yakin olmali")],
+            [P("RMSE"),    P("Ortalama tahmin hatasi - kucuk olmali"),       P("Referans araliginin %5'inden az")],
+            [P("F-stat"),  P("Genel model anlamliligi"),                    P("p < 0.05 olmali")],
+            [P("AIC/BIC"), P("Model kalitesi - dusuk deger daha iyi model"), P("Farkli modeller karsilastirilir")],
+        ]
+        story.append(tbl(ozet_tbl, [2.5*cm, 7*cm, 5.5*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Asiri Fit (Overfit) Uyarisi"))
+        story.append(P(
+            "R2 = 1.000 ve RMSE = 0 gorurseniz program bir uyari gosterir. "
+            "Bu durumda model veriyi ezberlemisstir - yeni formulasyonlari "
+            "dogru tahmin edemez. Cozum:"
+        ))
+        for item in [
+            "Run sayisini artirin (daha fazla NGI calismasi yapin)",
+            "Faktor sayisini azaltin - daha az degisken deneyin",
+            "Daha uygun bir tasarim tipi secin",
+        ]:
+            story.append(Bul(item))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Grafikler"))
+        grafik_tbl = [
+            [B("Grafik"), B("Ne Gosterir"), B("Nasil Yorumlanir")],
+            [P("Pareto - |t degerleri|"),
+             P("Faktorlerin etki buyuklukleri"),
+             P("Sari kesik cizgiyi gecenler anlamli (p<0.05). En uzun cubuk = en etkili faktor.")],
+            [P("Tahmin vs Gercek"),
+             P("Modelin tahminleri ile gercek olcumler"),
+             P("Noktalar sari cizgiye ne kadar yakinsa model o kadar iyi.")],
+            [P("Normal Olasilik - Artiklar"),
+             P("Model hatalarinin normal dagilima uyumu"),
+             P("Noktalar duz cizgi uzerinde olmali. Sapan noktalar outlier isareti.")],
+            [P("Artiklar vs Fitted"),
+             P("Hatalarin tahmin degerlerine gore dagilimi"),
+             P("Noktalar sifir cizgisi etrafinda rastgele dagilmali. Kalip goruluyorsa model sorunu var.")],
+        ]
+        story.append(tbl(grafik_tbl, [3.5*cm, 5*cm, 6.5*cm]))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 7. SEKME 4
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "7. Sekme 4 - Response Surface"))
+        story.append(HR())
+        story.append(P(
+            "Response Surface, iki faktorun yanit degiskenine birlikte etkisini "
+            "gorsel olarak gosterir. Optimum bolgeyi goz ile tespit etmenizi saglar."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Grafik Nasil Cizilir"))
+        for i, adim in enumerate([
+            "Yanit acilir menusu: Gormek istediginiz NGI parametresini secin (MMAD, FPF vb.)",
+            "X ekseni: Yatay eksende gosterilecek faktoru secin",
+            "Y ekseni: Dikey eksende gosterilecek faktoru secin (X'ten farkli olmali)",
+            "Sabit faktorler: 3+ faktorunuz varsa, X ve Y disindakiler sabit tutulur. "
+            "Deger alanini kullanarak bu faktorlerin hangi noktada sabit tutulacagini ayarlayin.",
+            "'Ciz' butonuna basin. Hesaplama arka planda calisir - buton 'Hesaplaniyor...' olur.",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Grafiklerin Yorumlanmasi"))
+        story.append(H(2, "3D Response Surface"))
+        story.append(P(
+            "Yuzey, X ve Y faktorlerinin kombinasyonlarinda yanit degiskeninin "
+            "aldigi degerleri gosterir. Derin cukur veya yuksek tepe, o bolgenin "
+            "ekstrem deger verdigi anlamina gelir."
+        ))
+        story.append(H(2, "Kontur Haritasi"))
+        story.append(P(
+            "Ayni bilginin tepeden gorunumu. Renk skalasina gore "
+            "(soguk renk = dusuk, sicak renk = yuksek) hedef bolgeyi bulun. "
+            "Her kontur cizgisi uzerindeki sayi, o cizgideki yanit degerini gosterir."
+        ))
+        story.append(SP(0.1))
+        story.append(Note(
+            "Sabit faktorler alaninda faktor degerini degistirip tekrar cizin - "
+            "grafik nasil degistigini gozlemleyin. Bu, 3+ faktorlu sistemleri "
+            "dilimleyerek incelemenin en etkili yoludur."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 8. SEKME 5
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "8. Sekme 5 - Optimizasyon"))
+        story.append(HR())
+        story.append(P(
+            "Bu sekme, tum hedefleri ayni anda karsilayan optimum formulasyonu "
+            "hesaplar. Desirability (arzu edilebilirlik) fonksiyonu kullanilarak "
+            "global optimum bulunur."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Hedef Tanimlama"))
+        story.append(P("Her yanit degiskeni icin bir hedef tanimlayin:"))
+        story.append(SP(0.1))
+        hedef_tbl = [
+            [B("Hedef"), B("Ne Zaman Kullanilir"), B("Ornek")],
+            [P("Minimize Et"),  P("Deger ne kadar dusuk olursa o kadar iyi"),
+             P("MMAD <= 3.5 um hedefliyorsaniz")],
+            [P("Maximize Et"),  P("Deger ne kadar yuksek olursa o kadar iyi"),
+             P("FPF >= 60% hedefliyorsaniz")],
+            [P("Hedefe Ulash"), P("Belirli bir hedefe ulasmak istiyorsaniz"),
+             P("MMAD = 3.0 um tam olarak")],
+        ]
+        story.append(tbl(hedef_tbl, [3*cm, 6*cm, 6*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Optimizasyon Sonucunun Yorumlanmasi"))
+        story.append(P(
+            "'Optimize Et' butonuna basin. Hesaplama arka planda calisir "
+            "(birkac saniye surebilir). Sonuc alani dolunca:"
+        ))
+        story.append(SP(0.1))
+        sonuc_tbl = [
+            [B("Bolum"), B("Anlami")],
+            [P("Faktor Degerleri"),
+             P("Programin oneridigi optimum formulasyon recetesi")],
+            [P("Tahmin Edilen Yanit Degerleri"),
+             P("Bu formulasyonla NGI'da beklenen MMAD, FPF vb. sonuclar")],
+            [P("%95 Tahmin Araligi (PI)"),
+             P("Gercek NGI olcumunun buyuk olasilikla bu aralikta olmasi beklenir. "
+               "Aralik genisse model zayif veya run sayisi az demektir.")],
+            [P("Genel Desirability"),
+             P("0-1 arasi overall skor:\n"
+               "0.8-1.0: Mukemmel\n0.6-0.8: Iyi\n"
+               "0.4-0.6: Kabul Edilebilir\n0.0-0.4: Zayif")],
+        ]
+        story.append(tbl(sonuc_tbl, [5*cm, 10*cm], header=False))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Dogrulama Calismasi"))
+        story.append(P(
+            "Optimizasyon sonucunu mutlaka NGI ile dogrulayin:"
+        ))
+        for item in [
+            "Onerilen formulasyonu hazirlayin",
+            "NGI ile en az 3 run olcun",
+            "Gercek sonuclarin %95 PI araliginda olup olmadigini kontrol edin",
+            "Aralik disinda kalirsa daha fazla run yapip modeli yeniden fit edin",
+        ]:
+            story.append(Bul(item))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 9. SEKME 6
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "9. Sekme 6 - Tasarim Uzayi"))
+        story.append(HR())
+        story.append(P(
+            "Tasarim uzayi goruntusu, hangi faktor kombinasyonlarinda deney "
+            "yapildigini gorsellestirerek tasarimin kapsam kalitesini gosterir."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Grafik Tipleri"))
+        grafik_tipleri = [
+            ["2 Faktor",    "2D Scatter grafik - noktalar faktor uzayindaki run konumlarini gosterir"],
+            ["3 Faktor",    "3D Scatter grafik - kup koselerine, kenar ortalarina ve merkeze yerlestirilmis noktalar"],
+            ["4+ Faktor",   "Katmanli goruntuleme - 4. faktor D=-1, D=0, D=+1 seviyelerinde ayri grafikler"],
+        ]
+        story.append(tbl(
+            [[B(a), P(b)] for a,b in grafik_tipleri],
+            [3*cm, 12*cm], header=False))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Nokta Renkleri"))
+        renkler = [
+            ["Gri/Mavi (Kose)", "Ust ust seviyelerin tum kombinasyonlari - Full Factorial noktalari"],
+            ["Kirmizi (Kenar)", "Kenar orta noktalari - BBD ve CCD'nin karakteristik noktalari"],
+            ["Yesil (Merkez)",  "Merkez noktasi - tekrarlanan olcumler (3 run)"],
+        ]
+        story.append(tbl(
+            [[B(a), P(b)] for a,b in renkler],
+            [4*cm, 11*cm], header=False))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Ust Uste Dusen Noktalar"))
+        story.append(P(
+            "BBD ve CCD tasarimlarinda merkez nokta birden fazla run'da tekrar eder. "
+            "Bu noktalar grafik uzerinde 'Run 13 (x3)' seklinde etiketlenir. "
+            "Baslik satirinda 'N run | M benzersiz nokta' bilgisi gosterilir."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Kapsama Isi Haritasi"))
+        story.append(P(
+            "'Kapsama Isi Haritasini Goster' kutucugunu isaretleyip Ciz'e basinca "
+            "ek bir panel acilir. Sicak renkler (kirmizi) yogun orneklenen bolgeleri, "
+            "soguk renkler (sari/bej) az orneklenen bolgeleri gosterir. "
+            "Sag ust kosede kapsama yuzdesi gosterilir."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 10. PDF RAPOR
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "10. PDF Rapor"))
+        story.append(HR())
+        story.append(P(
+            "Baslik cubugundaki 'PDF Rapor' butonuyla tum analiz sonuclarini "
+            "iceiren profesyonel bir rapor olusturabilirsiniz."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Raporun Icerigi"))
+        for bolum in [
+            "Proje bilgileri (urun, lot, analist, tarih)",
+            "Faktor tablosu (tip, alt/merkez/ust, birim)",
+            "Tasarim matrisi ve olcum sonuclari",
+            "Her yanit icin model ozeti (R2, RMSE, F-stat)",
+            "Her yanit icin ANOVA tablosu (df, SS, MS, F, p)",
+            "Optimizasyon sonucu (faktor degerleri, tahminler, desirability)",
+            "Model analiz grafikleri (Pareto, Tahmin vs Gercek, Normal Olasilik, Artiklar)",
+            "Response Surface grafigi (3D yuzey + kontur haritasi)",
+            "Tasarim Uzayi grafigi",
+        ]:
+            story.append(Bul(bolum))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Onemli Notlar"))
+        for not_ in [
+            "Grafikler PDF'e eklenebilmesi icin once Sekme 3, 4 ve 6'da grafiklerin cizirilmesi gerekir.",
+            "Grafik cizirilmemisse PDF'te 'Bu grafik henuz olusturulmadi' yazisi gorunur.",
+            "PDF olusturulunca otomatik acilir.",
+            "Rapor siyah-beyaz yazicilar icin optimize edilmistir.",
+        ]:
+            story.append(Bul(not_))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 11. ORNEK CALISMA
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "11. Ornek Calisma - Adim Adim"))
+        story.append(HR())
+        story.append(P(
+            "Bu ornekte Budesonide 0.5 mg/2 mL nebulizor suspansiyonu icin "
+            "MMAD ve FPF optimizasyonu yapilacaktir. "
+            "Box-Behnken tasarimi ile 3 faktor, 15 run."
+        ))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 1 - Tasarim Kurulumu (Sekme 1)"))
+        story.append(SP(0.1))
+        setup_tbl = [
+            [B("Alan"), B("Girilecek Deger")],
+            [P("Urun"), P("Budesonide 0.5 mg/2 mL")],
+            [P("Tasarim Tipi"), P("Box-Behnken (BBD)")],
+            [P("Faktor 1"), P("Polisorbat80 | Surekli | Alt: 0.01 | Merkez: 0.055 | Ust: 0.10 | %")],
+            [P("Faktor 2"), P("pH | Surekli | Alt: 4.5 | Merkez: 5.5 | Ust: 6.5")],
+            [P("Faktor 3"), P("Gliserin | Surekli | Alt: 0.0 | Merkez: 1.0 | Ust: 2.0 | %")],
+            [P("Yanitlar"), P("MMAD (um) ve FPF <5um (%) isaretleyin")],
+        ]
+        story.append(tbl(setup_tbl, [4*cm, 11*cm], header=False))
+        story.append(SP(0.1))
+        story.append(P("'Tasarim Matrisini Olustur' butonuna basin → 15 run cikar."))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 2 - Veri Girisi (Sekme 2)"))
+        story.append(P("NGI olcum sonuclarini tabloya girin:"))
+        story.append(SP(0.1))
+        veri_tbl = [
+            [B("Run"), B("MMAD (um)"), B("FPF <5um (%)")],
+            *[[P(str(i+1)), P(m), P(f)] for i,(m,f) in enumerate([
+                ("3.85","57.2"),("3.22","67.8"),("3.91","55.9"),
+                ("3.18","68.4"),("3.54","62.1"),("3.31","66.3"),
+                ("3.67","60.4"),("3.28","67.1"),("2.98","72.3"),
+                ("3.42","64.8"),("3.58","61.7"),("3.45","63.9"),
+                ("3.41","64.2"),("3.43","63.8"),("3.42","64.1"),
+            ])]
+        ]
+        story.append(tbl(veri_tbl, [2*cm, 5*cm, 5*cm]))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 3 - Model Fit (Sekme 3)"))
+        for i, adim in enumerate([
+            "Yanit acilir menusu: MMAD (um) secin",
+            "'Model Fit' butonuna basin",
+            "ANOVA tablosunda p < 0.05 olan faktorlere bakin (yesil)",
+            "Model Ozeti: R2 ve RMSE degerlerini not edin",
+            "Yanit menusu: FPF <5um (%) secin - ayni ANOVA kontrolunu yapin",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 4 - Response Surface (Sekme 4)"))
+        for i, adim in enumerate([
+            "Yanit: MMAD (um)",
+            "X ekseni: Gliserin",
+            "Y ekseni: pH",
+            "Sabit faktorler: Polisorbat80 = 0.055 (merkez noktasi)",
+            "'Ciz' butonuna basin - kontur haritasinda optimum bolgeyi taniyin",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 5 - Optimizasyon (Sekme 5)"))
+        for i, adim in enumerate([
+            "MMAD (um) → 'Minimize Et' secin",
+            "FPF <5um (%) → 'Maximize Et' secin",
+            "'Optimize Et' butonuna basin (hesaplama ~10-30 saniye surer)",
+            "Sonuclari degerlendirin: Desirability skoru ve tahmin araligina bakin",
+            "Onerilen formulasyonu NGI ile dogrulayin",
+        ], 1):
+            story.append(Paragraph(f"{i}. {adim}", s_bullet))
+        story.append(SP(0.2))
+        
+        story.append(H(1, "Adim 6 - PDF Rapor"))
+        story.append(P(
+            "Once Sekme 4 ve 6'da grafikleri cizin. Sonra baslik cubugundaki "
+            "'PDF Rapor' butonuna basin, kayit yeri secin."
+        ))
+        story.append(PageBreak())
+        
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # 12. SSS
+        # ═══════════════════════════════════════════════════════════════════════════════
+        story.append(H(0, "12. Sikca Sorulan Sorular"))
+        story.append(HR())
+        
+        sorular = [
+            ("Kac run yapmam yeterlidir?",
+             "Faktor sayisina gore degisir. 3 faktorle BBD'de 15, CCD'de ~20 run yeterlidir. "
+             "Plackett-Burman ile 5-6 faktoru 12 run'da tarayabilirsiniz. "
+             "Genel kural: run sayisi >= (terim sayisi + 2)."),
+        
+            ("R2 = 1.000 cikti, bu iyi mi?",
+             "Hayir. R2 = 1.000 ve RMSE = 0, modelin veriyi ezberledigi anlamina gelir. "
+             "Program bu durumda uyari verir. Daha fazla run yapmaniz veya faktor sayisini "
+             "azaltmaniz gerekir."),
+        
+            ("Hicbir faktor anlamli cikmadi, ne yapmaliyim?",
+             "Birinci olasilik: Run sayisi az, model gucu dusuk. Daha fazla deney yapin. "
+             "Ikinci olasilik: Sectiginiz faktor araligi dar, yanit uzerinde yeterince etki yok. "
+             "Alt ve ust seviyeleri daha genis araliga alip tekrar deneyin. "
+             "Ucuncu olasilik: Gercekten hicbiri anlamli degil - farkli faktorler deneyin."),
+        
+            ("Optimizasyon sonucu mantiksiz gorunuyor, ne yapmaliyim?",
+             "Model zayifsa (dusuk R2, yuksek RMSE) optimizasyon sonuclari guvenilmez olur. "
+             "Once model kalitesini artirin. Run sayisini artirin, "
+             "outlier runlari kontrol edin, CCD veya BBD tasarim tipini tercih edin."),
+        
+            ("Excel'e aktaramiyorum, ne yapmaliyim?",
+             "Program openpyxl kutuphanesine ihtiyac duyar. Bu kutuphane .exe icine gomulmustur. "
+             "Hata aliyorsaniz farkli bir kayit klasoru deneyin."),
+        
+            ("PDF'te Turkce karakterler bozuk gorunuyor.",
+             "Program oncelikle Windows sistem fontlarini (Arial, Tahoma, Calibri) kullanir. "
+             "Bu fontlarin Turkce karakterleri desteklemesi gerekir. Sorun devam ediyorsa "
+             "DejaVuSans.ttf dosyasini .exe ile ayni klasore koyun."),
+        
+            ("Response Surface grafigi cok uzun suruyyor.",
+             "40x40 nokta matrisi hesaplanir (1600 tahmin). Bu normal surede tamamlanir. "
+             "Hesaplama arka planda calisir, buton 'Hesaplaniyor...' olur - "
+             "program donmamistir, bekleyin."),
+        
+            ("NGI-CITDAS programiyla nasil kullanirim?",
+             "NGI-CITDAS programindaki 'DoE'ye Goncer' butonu, mevcut seri sonuclarini "
+             "JSON dosyasina kaydeder. DoE Analyzer'da bu JSON'u import edip "
+             "yanit degerlerini otomatik doldurabilirsiniz."),
+        ]
+        
+        for soru, cevap in sorular:
+            block = [
+                H(1, soru),
+                P(cevap),
+                SP(0.2),
+            ]
+            story.append(KeepTogether(block))
+        
+        story.append(PageBreak())
+        
+        # Son sayfa
+        story.append(SP(2))
+        story.append(HRFlowable(width="100%", thickness=2, color=GOLD))
+        story.append(SP(0.3))
+        story.append(Paragraph("NGI DoE Analyzer - v3.0", ParagraphStyle(
+            "footer", fontName=TRB, fontSize=11, textColor=NAVY, spaceAfter=4)))
+        story.append(P("Farmasotik Formulasyon Optimizasyonu Araci"))
+        story.append(SP(0.2))
+        story.append(P(
+            "Bu program Ph.Eur. 2.9.18, USP <601> ve ICH Q8 kilavuzlariyla "
+            "uyumlu DoE metodolojisi kullanmaktadir."
+        ))
+
+        story.insert(0, Paragraph(
+            f"[Font: TR={TR}, TRB={TRB}]", debug_style))
+        story.insert(1, SP(0.1))
+
+        try:
+            doc.build(story)
+            import subprocess, platform
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            QMessageBox.information(self, "Klavuz",
+                "Kullanim kilavuzu olusturuldu:\n" + path)
+        except Exception as e:
+            QMessageBox.critical(self, "Klavuz Hatasi", str(e))
 
     def export_pdf(self):
         """PDF rapor - siyah beyaz, KeepTogether"""
