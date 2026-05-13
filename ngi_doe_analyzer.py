@@ -40,12 +40,15 @@ def resource_path(rel):
     return os.path.join(base, rel)
 
 def tr2ascii(text):
-    """PDF fontunda olmayan Türkçe karakterleri ASCII karşılığına çevir"""
-    tr_map = str.maketrans(
-        "çğıöşüÇĞİÖŞÜ",
-        "cgiosuCGIOSU"
-    )
-    return str(text).translate(tr_map)
+    """Turkce karakterleri ASCII karsiligina cevir - PDF icin"""
+    replacements = {
+        'ç':'c', 'ğ':'g', 'ı':'i', 'ö':'o', 'ş':'s', 'ü':'u',
+        'Ç':'C', 'Ğ':'G', 'İ':'I', 'Ö':'O', 'Ş':'S', 'Ü':'U',
+    }
+    result = str(text)
+    for tr_char, ascii_char in replacements.items():
+        result = result.replace(tr_char, ascii_char)
+    return result
 
 # ─── Renkler & Stiller ────────────────────────────────────────────────────────
 BG    = "#0e1219"
@@ -2123,29 +2126,29 @@ class DoEApp(QMainWindow):
 
         # ── Proje bilgisi ────────────────────────────────────────────────────
         meta_rows = [
-            [CB("Urun"),          C(p.product or "—")],
+            [CB(tr2ascii("Ürün")),          C(p.product or "—")],
             [CB("Lot No."),       C(p.batch   or "—")],
-            [CB("Analist"),       C(p.analyst or "—")],
+            [CB(tr2ascii("Analist")),       C(p.analyst or "—")],
             [CB("Tarih"),         C(p.date    or "—")],
-            [CB("Tasarim"),       C(p.design_type)],
-            [CB("Run Sayisi"),    C(str(len(p.design_matrix))
+            [CB(tr2ascii("Tasarım")),       C(p.design_type)],
+            [CB(tr2ascii("Run Sayısı")),    C(str(len(p.design_matrix))
                                    if p.design_matrix is not None else "—")],
-            [CB("Faktor Sayisi"), C(str(len(p.factors)))],
+            [CB(tr2ascii("Faktör Sayısı")), C(str(len(p.factors)))],
         ]
         mt, ms = tbl(meta_rows, [4*cm, 12*cm], has_header=False)
         mt.setStyle(ms)
         story.append(KeepTogether([
-            Paragraph("Proje Bilgileri", s_h2),
+            Paragraph(tr2ascii("Proje Bilgileri"), s_h2),
             mt, Spacer(1, 0.3*cm)
         ]))
 
         # ── Faktörler ────────────────────────────────────────────────────────
         f_rows = [[CB(h) for h in
-                   ["Faktor","Tip","Alt","Merkez","Ust","Birim"]]]
+                   [tr2ascii("Faktör"),tr2ascii("Tip"),"Alt","Merkez",tr2ascii("Üst"),"Birim"]]]
         for f in p.factors:
             f_rows.append([
                 C(f["name"]),
-                C("Surekli" if f["type"]=="continuous" else "Kategorik"),
+                C(tr2ascii("Sürekli") if f["type"]=="continuous" else tr2ascii("Kategorik")),
                 C(f"{f['low']:.4f}"),
                 C(f"{f.get('mid',(f['low']+f['high'])/2):.4f}"),
                 C(f"{f['high']:.4f}"),
@@ -2153,7 +2156,7 @@ class DoEApp(QMainWindow):
         ft, fs = tbl(f_rows, [4.5*cm,3*cm,2*cm,2*cm,2*cm,2.5*cm])
         ft.setStyle(fs)
         story.append(KeepTogether([
-            Paragraph("Faktorler", s_h2),
+            Paragraph(tr2ascii("Faktorler"), s_h2),
             ft, Spacer(1, 0.3*cm)
         ]))
 
@@ -2182,17 +2185,17 @@ class DoEApp(QMainWindow):
             dm, dms = tbl(t_rows, [cw]*len(all_cols))
             dm.setStyle(dms)
             story.append(KeepTogether([
-                Paragraph("Tasarim Matrisi ve Olcum Sonuclari", s_h2),
+                Paragraph(tr2ascii("Tasarim Matrisi ve Olcum Sonuclari"), s_h2),
                 dm, Spacer(1, 0.3*cm)
             ]))
 
         # ── Model sonuçları ──────────────────────────────────────────────────
         if p.model_results:
             story.append(PageBreak())
-            story.append(Paragraph("Model Sonuclari", s_h2))
+            story.append(Paragraph(tr2ascii("Model Sonuclari"), s_h2))
             for resp, model in p.model_results.items():
                 lbl = RESPONSE_LABELS.get(resp, resp)
-                block = [Paragraph(lbl, s_h3)]
+                block = [Paragraph(tr2ascii(lbl), s_h3)]
                 try:
                     r2   = model.rsquared
                     r2a  = model.rsquared_adj
@@ -2215,7 +2218,7 @@ class DoEApp(QMainWindow):
                 try:
                     anova = anova_lm(model, typ=2)
                     a_rows = [[CB(h) for h in
-                               ["Kaynak","df","SS","MS","F","p"]]]
+                               [tr2ascii("Kaynak"),"df","SS","MS","F","p"]]]
                     for idx2, row2 in anova.iterrows():
                         dv = row2.get("df",np.nan)
                         sv = row2.get("sum_sq",np.nan)
@@ -2240,23 +2243,24 @@ class DoEApp(QMainWindow):
         # ── Optimizasyon ─────────────────────────────────────────────────────
         opt_text = self.tab5.txt_opt_result.toPlainText()
         if opt_text and "─" in opt_text:
-            block = [Paragraph("Optimizasyon Sonucu", s_h2)]
+            block = [Paragraph(tr2ascii("Optimizasyon Sonucu"), s_h2)]
             for line in opt_text.split("\n"):
-                clean = (line.replace("─","—").replace("µ","u")
-                             .replace("≤","<=").replace("≥",">="))
+                clean = tr2ascii(line)
+                clean = (clean.replace("─","—").replace("µ","u")
+                              .replace("≤","<=").replace("≥",">="))
                 block.append(Paragraph(clean.replace(" ","&nbsp;"), s_mono))
             story.append(KeepTogether(block))
 
         # ── Grafikler — siyah beyaz ──────────────────────────────────────────
         story.append(PageBreak())
-        story.append(Paragraph("Grafikler", s_h2))
+        story.append(Paragraph(tr2ascii("Grafikler"), s_h2))
 
         for fig_obj, title, canvas_obj in [
-            (self.tab3.fig_analysis, "Model Analiz Grafikleri",
+            (self.tab3.fig_analysis, tr2ascii("Model Analiz Grafikleri"),
              self.tab3.canvas_analysis),
             (self.tab4.fig_surf,     "Response Surface",
              self.tab4.canvas_surf),
-            (self.tab6.fig,          "Tasarim Uzayi",
+            (self.tab6.fig,          tr2ascii("Tasarım Uzayı"),
              self.tab6.canvas),
         ]:
             title_ascii = tr2ascii(title)
