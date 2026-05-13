@@ -39,6 +39,32 @@ def resource_path(rel):
             sys.executable if getattr(sys,'frozen',False) else __file__)))
     return os.path.join(base, rel)
 
+def make_help_btn(tooltip_text, parent=None):
+    """Küçük ? butonu — tıklayınca açıklama popup gösterir"""
+    btn = QPushButton("?")
+    btn.setFixedSize(18, 18)
+    btn.setStyleSheet("""
+        QPushButton {
+            background: rgba(30,60,100,0.8);
+            border: 1px solid #4a7ab0;
+            border-radius: 9px;
+            color: #90c0f0;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 0px;
+        }
+        QPushButton:hover {
+            background: rgba(50,100,160,0.9);
+            border-color: #FFC600;
+            color: #FFC600;
+        }
+    """)
+    msg = tooltip_text
+    btn.clicked.connect(lambda: QMessageBox.information(
+        parent, "Açıklama", msg))
+    return btn
+
+
 def tr2ascii(text):
     """Turkce karakterleri ASCII karsiligina cevir - PDF icin"""
     replacements = {
@@ -965,9 +991,6 @@ class Tab2_Design(QWidget):
         bar = QHBoxLayout(); bar.setSpacing(8)
         bar.addWidget(section_label("📋  Tasarım Matrisi & Yanıt Değerleri"))
         bar.addStretch()
-        self.btn_randomize = make_btn("🔀 Randomize", "rgba(60,40,10,0.8)", 28)
-        self.btn_randomize.clicked.connect(self._randomize)
-        bar.addWidget(self.btn_randomize)
         self.btn_export = make_btn("⬇ Excel'e Aktar", "rgba(10,60,20,0.8)", 28)
         self.btn_export.clicked.connect(self._export_excel)
         bar.addWidget(self.btn_export)
@@ -1079,30 +1102,40 @@ class Tab2_Design(QWidget):
         except:
             pass
 
-    def _randomize(self):
-        df = self.project.design_matrix
-        if df is None: return
-        perm = np.random.permutation(len(df))
-        self.project.design_matrix = (
-            df.iloc[perm].reset_index(drop=True))
-        self.project.design_matrix["Run"] = range(1, len(df) + 1)
-        self.project.run_results = {}
-        self.refresh()
-
     def _export_excel(self):
         df = self.project.design_matrix
-        if df is None: return
+        if df is None:
+            QMessageBox.warning(self, "", "Önce tasarım matrisi oluşturun.")
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, "Excel Kaydet",
             f"DoE_Matrix_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
             "Excel (*.xlsx)")
         if not path: return
         try:
-            export_df = self.project.build_response_table() or df
-            export_df.to_excel(path, index=False)
-            QMessageBox.information(self, "✔", "Excel kaydedildi.")
+            export_df = self.project.build_response_table()
+            if export_df is None:
+                export_df = df
+            # Coded sütunları hariç tut
+            show_cols = [c for c in export_df.columns
+                        if not c.endswith("_coded")]
+            export_df = export_df[show_cols]
+            # Yanıt değerlerini ekle
+            for resp in self.project.responses:
+                if resp not in export_df.columns:
+                    export_df[resp] = [
+                        self.project.run_results.get(i, {}).get(resp, "")
+                        for i in range(len(export_df))]
+            # Sütun isimlerini güzel göster
+            col_rename = {c: RESPONSE_LABELS.get(c, c)
+                         for c in export_df.columns}
+            export_df = export_df.rename(columns=col_rename)
+            export_df.to_excel(path, index=False, engine='openpyxl')
+            QMessageBox.information(self, "Excel", "Excel kaydedildi:\n" + path)
+        except ImportError:
+            QMessageBox.critical(self, "Hata", "openpyxl kurulu degil.")
         except Exception as e:
-            QMessageBox.critical(self, "Hata", str(e))
+            QMessageBox.critical(self, "Excel Hatası", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1130,6 +1163,19 @@ class Tab3_Analysis(QWidget):
         self.btn_fit = make_btn("▶ Model Fit", "rgba(20,80,20,0.8)", 32)
         self.btn_fit.clicked.connect(self._fit)
         bar.addWidget(self.btn_fit)
+        bar.addWidget(make_help_btn(
+            "Model & ANOVA Sekmesi:\n\n"
+            "1. Yanit degiskenini secin (MMAD, FPF vb.)\n"
+            "2. 'Model Fit' butonuna basin\n\n"
+            "Grafikler:\n\n"
+            "Pareto: Faktorleri etki buyuklugune gore siralar. "
+            "Sari cizgiyi gecenler istatistiksel olarak anlamli (p<0.05).\n\n"
+            "Tahmin vs Gercek: Modelin tahminleri ile gercek olcumler karsilastirilir. "
+            "Noktalar cizgiye yakin = iyi model.\n\n"
+            "Normal Olasilik - Artiklar: Hatalarin normal dagilima uygunlugu. "
+            "Noktalar cizgi uzerinde = dagilim normal, model gecerli.\n\n"
+            "Artiklar vs Fitted: Hatalarin rastgele dagildigi kontrol edilir. "
+            "Belirli bir kalip varsa modelde sorun var demektir.", self))
         lay.addLayout(bar)
 
         spl = QSplitter(Qt.Orientation.Horizontal)
@@ -1137,12 +1183,37 @@ class Tab3_Analysis(QWidget):
         # Sol: ANOVA + özet
         left = QWidget()
         ll = QVBoxLayout(left); ll.setContentsMargins(0, 0, 6, 0); ll.setSpacing(8)
-        ll.addWidget(section_label("ANOVA Tablosu"))
+        anova_hdr = QHBoxLayout()
+        anova_hdr.addWidget(section_label("ANOVA Tablosu"))
+        anova_hdr.addWidget(make_help_btn(
+            "ANOVA Tablosu Sutunlari:\n\n"
+            "df (Serbestlik Derecesi): Her faktorun kac bagimsiz bilgi tasidigi.\n\n"
+            "sum_sq (Kareler Toplami): Faktorun yanit degiskenindeki toplam degisime katkisi. "
+            "Buyuk deger = o faktor yaniti cok etkiliyor.\n\n"
+            "mean_sq (Ortalama Kare): sum_sq / df. Faktorleri adil karsilastirmak icin.\n\n"
+            "F (F Istatistigi): Faktorun etkisinin rastgele gurultuye orani. "
+            "Yuksek F = faktor gercekten etkili.\n\n"
+            "PR(>F) - p degeri: p < 0.05 ise faktor istatistiksel olarak anlamli (yesil). "
+            "p > 0.05 ise anlamli degil.", self))
+        anova_hdr.addStretch()
+        ll.addLayout(anova_hdr)
         self.anova_table = QTableWidget()
         self.anova_table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers)
         ll.addWidget(self.anova_table)
-        ll.addWidget(section_label("Model Özeti"))
+        model_hdr = QHBoxLayout()
+        model_hdr.addWidget(section_label("Model Özeti"))
+        model_hdr.addWidget(make_help_btn(
+            "Model Ozeti Degerleri:\n\n"
+            "R2: Modelin veriyi ne kadar iyi acikladi (0-1). "
+            "0.8+ iyi, 1.0 asiri fit olmasi anlamina gelebilir.\n\n"
+            "Adj R2: Faktor sayisina gore duzeltilmis R2. "
+            "R2'den dusukse gereksiz terimler var demektir.\n\n"
+            "RMSE: Modelin ortalama tahmin hatasi. Kucuk olmali.\n\n"
+            "F-stat ve p: Genel model anlamliligi. p < 0.05 ise model anlamli.\n\n"
+            "AIC/BIC: Model kalitesi olcutu. Dusuk deger daha iyi model.", self))
+        model_hdr.addStretch()
+        ll.addLayout(model_hdr)
         self.txt_summary = QTextEdit()
         self.txt_summary.setReadOnly(True)
         self.txt_summary.setFixedHeight(140)
@@ -1352,9 +1423,11 @@ class Tab4_Surface(QWidget):
         ctrl.addWidget(self.combo_resp)
         ctrl.addWidget(QLabel("X ekseni:"))
         self.combo_x = QComboBox(); self.combo_x.setFixedWidth(130)
+        self.combo_x.currentTextChanged.connect(self._update_fixed)
         ctrl.addWidget(self.combo_x)
         ctrl.addWidget(QLabel("Y ekseni:"))
         self.combo_y = QComboBox(); self.combo_y.setFixedWidth(130)
+        self.combo_y.currentTextChanged.connect(self._update_fixed)
         ctrl.addWidget(self.combo_y)
         self.btn_plot = make_btn("▶ Çiz", "rgba(20,60,80,0.8)", 30)
         self.btn_plot.clicked.connect(self._plot)
@@ -1394,20 +1467,31 @@ class Tab4_Surface(QWidget):
 
     def _update_fixed(self):
         fl = self.fixed_card.layout()
-        # Tüm eski grup widgetlarını temizle (QLabel "Sabit faktörler:" hariç)
-        while fl.count() > 2:  # 0=label, 1=stretch → diğerlerini sil
+        # Tüm eski grup widgetlarını temizle
+        while fl.count() > 2:
             item = fl.takeAt(1)
             if item and item.widget():
                 item.widget().setParent(None)
         self.fixed_widgets.clear()
-        # X ve Y dışındaki sürekli faktörleri ekle
+        # X ve Y combo'larını güncelle — seçili değerleri al
         x_name = self.combo_x.currentText()
         y_name = self.combo_y.currentText()
+        # X ve Y combo'larında birbirini exclude et
+        x_idx = self.combo_x.currentIndex()
+        y_idx = self.combo_y.currentIndex()
+        if x_name == y_name:
+            # Çakışma varsa Y'yi bir sonrakine al
+            new_y = (y_idx + 1) % self.combo_y.count()
+            self.combo_y.blockSignals(True)
+            self.combo_y.setCurrentIndex(new_y)
+            self.combo_y.blockSignals(False)
+            y_name = self.combo_y.currentText()
+        # X ve Y dışındaki faktörleri sabit olarak göster
         added = set()
         for f in self.project.factors:
             if f["name"] in [x_name, y_name]: continue
             if f["type"] != "continuous": continue
-            if f["name"] in added: continue  # mükerrer engeli
+            if f["name"] in added: continue
             added.add(f["name"])
             mid = f.get("mid", (f["low"] + f["high"]) / 2)
             grp = QWidget(); grp.setStyleSheet("background:transparent;")
@@ -1541,7 +1625,24 @@ class Tab5_Optimization(QWidget):
         res_card = card_frame()
         rl = QVBoxLayout(res_card)
         rl.setContentsMargins(12, 10, 12, 10); rl.setSpacing(8)
-        rl.addWidget(section_label("📌 Optimum Formülasyon Önerisi"))
+        opt_hdr = QHBoxLayout()
+        opt_hdr.addWidget(section_label("📌 Optimum Formülasyon Önerisi"))
+        opt_hdr.addWidget(make_help_btn(
+            "Optimum Formulasyon Onerisi:\n\n"
+            "Faktor Degerleri: Programin oneridigi optimum formulasyon. "
+            "Bu degerlerde formule hazirlanip NGI ile dogrulanmalidir.\n\n"
+            "Tahmin Edilen Yanit Degerleri: Bu formulasyonla NGI'da "
+            "beklenen sonuclar. Gercek olcum bu degerlerden farkli olabilir.\n\n"
+            "%%95 PI (Tahmin Araligi): Gercek NGI olcumunun buyuk ihtimalle "
+            "bu aralikta cikmasi beklenir. Aralik genisse model zayif demektir.\n\n"
+            "Genel Desirability: 0-1 arasi skor. Tum hedeflerin birlikte "
+            "ne kadar karsilandigini gosterir.\n"
+            "  0.8-1.0: Mukemmel\n"
+            "  0.6-0.8: Iyi\n"
+            "  0.4-0.6: Kabul Edilebilir\n"
+            "  0.0-0.4: Zayif — daha fazla run gerekebilir.", self))
+        opt_hdr.addStretch()
+        rl.addLayout(opt_hdr)
         self.txt_opt_result = QTextEdit()
         self.txt_opt_result.setReadOnly(True)
         self.txt_opt_result.setStyleSheet(f"""
@@ -1898,7 +1999,8 @@ class Tab6_DesignSpace(QWidget):
         ax3.set_title(title_str, color=TXT, fontsize=9)
         ax3.set_facecolor("#0e1525")
         ax3.tick_params(colors=TXT2, labelsize=7)
-        ax3.legend(fontsize=8, facecolor=BG3, labelcolor=TXT)
+        leg = ax3.legend(fontsize=8, facecolor=BG3, labelcolor=TXT)
+        leg.set_title("")
 
         if show_heat:
             self._draw_heatmap_2d(ax_h, pts[:,:2], factors[:2])
@@ -2042,15 +2144,23 @@ class DoEApp(QMainWindow):
         from reportlab.pdfbase.ttfonts import TTFont
         import io
 
-        # Font kayıt — önce exe yanındaki font, sonra sistem fontu
+        # Font kayıt — exe yanı, Linux sistem, Windows sistem sırasıyla dene
         TR  = "Helvetica"
         TRB = "Helvetica-Bold"
         TRM = "Courier"
         font_search = [
-            ("DV",  resource_path("DejaVuSans.ttf")),
-            ("DV",  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            ("DVB", resource_path("DejaVuSans-Bold.ttf")),
-            ("DVB", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            # Normal
+            ("TRF",  resource_path("DejaVuSans.ttf")),
+            ("TRF",  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            ("TRF",  "C:/Windows/Fonts/arial.ttf"),
+            ("TRF",  "C:/Windows/Fonts/tahoma.ttf"),
+            ("TRF",  "C:/Windows/Fonts/calibri.ttf"),
+            # Bold
+            ("TRFB", resource_path("DejaVuSans-Bold.ttf")),
+            ("TRFB", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ("TRFB", "C:/Windows/Fonts/arialbd.ttf"),
+            ("TRFB", "C:/Windows/Fonts/tahomabd.ttf"),
+            ("TRFB", "C:/Windows/Fonts/calibrib.ttf"),
         ]
         registered = set()
         for fname, fpath in font_search:
@@ -2059,8 +2169,8 @@ class DoEApp(QMainWindow):
                 if os.path.exists(fpath):
                     pdfmetrics.registerFont(TTFont(fname, fpath))
                     registered.add(fname)
-                    if fname == "DV":  TR = "DV"; TRM = "DV"
-                    else:              TRB = "DVB"
+                    if fname == "TRF":  TR = "TRF"; TRM = "TRF"
+                    else:               TRB = "TRFB"
             except: pass
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2293,6 +2403,13 @@ class DoEApp(QMainWindow):
                     ax.xaxis.label.set_color("black")
                     ax.yaxis.label.set_color("black")
                     ax.title.set_color("black")
+                    # Legend arka planını beyaza çevir
+                    leg = ax.get_legend()
+                    if leg:
+                        leg.get_frame().set_facecolor("white")
+                        leg.get_frame().set_edgecolor("#999999")
+                        for text in leg.get_texts():
+                            text.set_color("black")
 
                 buf = io.BytesIO()
                 fig_obj.savefig(buf, format="png", dpi=150,
