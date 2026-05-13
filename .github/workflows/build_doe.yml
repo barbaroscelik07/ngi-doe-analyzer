@@ -30,6 +30,7 @@ jobs:
         pip install pyDOE3
         pip install reportlab
         pip install pillow
+        pip install openpyxl
 
     - name: EXE Olusturma
       run: python -m PyInstaller --onefile --noconsole --icon=doe_icon.ico --name="NGI_DoE_Analyzer" --add-data "doe_icon.ico;." --add-data "DejaVuSans.ttf;." --add-data "DejaVuSans-Bold.ttf;." --collect-data pyDOE3 ngi_doe_analyzer.py
