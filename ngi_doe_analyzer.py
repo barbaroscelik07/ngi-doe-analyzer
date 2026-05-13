@@ -65,6 +65,45 @@ def make_help_btn(tooltip_text, parent=None):
     return btn
 
 
+def register_pdf_fonts():
+    """PDF fontlarini kaydet — tekrar cagrilsa da guvenli"""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    TR = "Helvetica"; TRB = "Helvetica-Bold"
+    registered = pdfmetrics.getRegisteredFontNames()
+    if "NGITR" not in registered:
+        for fpath in [
+            resource_path("DejaVuSans.ttf"),
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/tahoma.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]:
+            try:
+                if os.path.exists(fpath):
+                    pdfmetrics.registerFont(TTFont("NGITR", fpath))
+                    TR = "NGITR"
+                    break
+            except: pass
+    else:
+        TR = "NGITR"
+    if "NGITRB" not in registered:
+        for fpath in [
+            resource_path("DejaVuSans-Bold.ttf"),
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/tahomabd.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]:
+            try:
+                if os.path.exists(fpath):
+                    pdfmetrics.registerFont(TTFont("NGITRB", fpath))
+                    TRB = "NGITRB"
+                    break
+            except: pass
+    else:
+        TRB = "NGITRB"
+    return TR, TRB
+
+
 def tr2ascii(text):
     """Turkce karakterleri ASCII karsiligina cevir - PDF icin"""
     replacements = {
@@ -2148,24 +2187,9 @@ class DoEApp(QMainWindow):
         from reportlab.pdfbase.ttfonts import TTFont
         import io as _io
 
-        # Font kayıt
-        TR = "Helvetica"; TRB = "Helvetica-Bold"; TRM = "Courier"
-        for fname, fpath in [
-            ("KDV",  resource_path("DejaVuSans.ttf")),
-            ("KDV",  "C:/Windows/Fonts/arial.ttf"),
-            ("KDV",  "C:/Windows/Fonts/tahoma.ttf"),
-            ("KDVB", resource_path("DejaVuSans-Bold.ttf")),
-            ("KDVB", "C:/Windows/Fonts/arialbd.ttf"),
-            ("KDVB", "C:/Windows/Fonts/tahomabd.ttf"),
-        ]:
-            try:
-                if "KDV" in pdfmetrics.getRegisteredFontNames() and fname=="KDV": continue
-                if "KDVB" in pdfmetrics.getRegisteredFontNames() and fname=="KDVB": continue
-                if os.path.exists(fpath):
-                    pdfmetrics.registerFont(TTFont(fname, fpath))
-                    if fname == "KDV":  TR = "KDV"; TRM = "KDV"
-                    else:               TRB = "KDVB"
-            except: pass
+        # Font kayıt — ortak fonksiyon, tekrar çağrılsa güvenli
+        TR, TRB = register_pdf_fonts()
+        TRM = TR
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Klavuz Kaydet",
@@ -2214,6 +2238,9 @@ class DoEApp(QMainWindow):
         def SP(n=0.3): return Spacer(1, n*cm)
         def HR(): return HRFlowable(width="100%", thickness=0.5, color=MD)
 
+        s_hdr = ParagraphStyle("hdr", fontName=TRB, fontSize=8,
+            textColor=colors.white, leading=10)
+
         def tbl(data, widths, header=True):
             t = Table(data, colWidths=widths, repeatRows=1 if header else 0)
             style = [
@@ -2237,9 +2264,10 @@ class DoEApp(QMainWindow):
             t.setStyle(TableStyle(style))
             return t
 
-        # Font debug satiri
-        debug_style = ParagraphStyle("dbg", fontName=TR, fontSize=7,
-            textColor=colors.HexColor("#AAAAAA"))
+        def BH(txt):
+            """Header hücresi — beyaz metin"""
+            return Paragraph(str(txt), s_hdr)
+
 
         story = []
         
@@ -2259,7 +2287,7 @@ class DoEApp(QMainWindow):
         story.append(SP(1))
         
         kapak_tbl = tbl([
-            [B("Surum"),    P("v3.0")],
+            [BH("Surum"),    P("v3.0")],
             [B("Tarih"),    P("Mayis 2026")],
             [B("Platform"), P("Windows 10/11 (64-bit)")],
             [B("Dil"),      P("Turkce")],
@@ -2340,7 +2368,7 @@ class DoEApp(QMainWindow):
         story.append(HR())
         story.append(H(1, "Sistem Gereksinimleri"))
         req_tbl = tbl([
-            [B("İşletim Sistemi"), P("Windows 10 veya Windows 11 (64-bit)")],
+            [BH("İşletim Sistemi"), P("Windows 10 veya Windows 11 (64-bit)")],
             [B("Disk Alani"),      P("Yaklasik 150 MB")],
             [B("RAM"),             P("Minimum 4 GB (8 GB onerilir)")],
             [B("Ekran Cozunurlugu"), P("Minimum 1280 x 720")],
@@ -2350,11 +2378,9 @@ class DoEApp(QMainWindow):
         
         story.append(H(1, "Kurulum Adımları"))
         for i, adim in enumerate([
-            "GitHub releases sayfasindan NGI_DoE_Analyzer.exe dosyasini indirin.",
-            "Dosyayi istediginiz bir klasore kopyalayin (ornegin C:\\Program Files\\NGI_DoE).",
-            "NGI_DoE_Analyzer.exe dosyasina cift tiklayin.",
-            "Windows Defender uyarisi gorurseniz 'Daha fazla bilgi' > 'Yine de calistir' secin.",
-            "Program hazirdir - kurulum gerektirmez.",
+            "NGI_DoE_Analyzer.exe dosyasına çift tıklayın.",
+            "Windows Defender uyarısı görürseniz 'Daha fazla bilgi' > 'Yine de çalıştır' seçin.",
+            "Program hazırdır — kurulum gerektirmez.",
         ], 1):
             story.append(Paragraph(f"{i}. {adim}", s_bullet))
         
@@ -2500,7 +2526,7 @@ class DoEApp(QMainWindow):
             "Birden fazla seçebilirsiniz:"
         ))
         yanit_tbl = [
-            [B("Parametre"), B("Aciklama")],
+            [BH("Parametre"), BH("Aciklama")],
             [P("MMAD (um)"),    P("Medyan Aerodinamik Çap - ana etkinlik göstergesi")],
             [P("GSD"),         P("Geometrik Standart Sapma - dagilim genisligi")],
             [P("FPD <5um (mg)"), P("Fine Particle Dose - 5 µm altındaki toplam doz")],
@@ -2613,7 +2639,7 @@ class DoEApp(QMainWindow):
         story.append(H(1, "Model Özeti"))
         story.append(SP(0.1))
         ozet_tbl = [
-            [B("Metrik"), B("Anlami"), B("Iyi Deger")],
+            [BH("Metrik"), BH("Anlami"), BH("Iyi Deger")],
             [P("R2"),      P("Modelin veriyi ne kadar açıkladı"),           P("0.7 - 0.95")],
             [P("Adj R2"),  P("Faktör sayısına göre düzeltilmiş R2"),         P("R2'ye yakin olmali")],
             [P("RMSE"),    P("Ortalama tahmin hatası - kucuk olmali"),       P("Referans araliginin %5'inden az")],
@@ -2734,7 +2760,7 @@ class DoEApp(QMainWindow):
         ))
         story.append(SP(0.1))
         sonuc_tbl = [
-            [B("Bolum"), B("Anlami")],
+            [BH("Bolum"), BH("Anlami")],
             [P("Faktor Degerleri"),
              P("Programin oneridigi optimum formulasyon recetesi")],
             [P("Tahmin Edilen Yanit Degerleri"),
@@ -2881,7 +2907,7 @@ class DoEApp(QMainWindow):
         story.append(P("NGI ölçüm sonuçlarını tabloya girin:"))
         story.append(SP(0.1))
         veri_tbl = [
-            [B("Run"), B("MMAD (um)"), B("FPF <5um (%)")],
+            [BH("Run"), BH("MMAD (um)"), BH("FPF <5um (%)")],
             *[[P(str(i+1)), P(m), P(f)] for i,(m,f) in enumerate([
                 ("3.85","57.2"),("3.22","67.8"),("3.91","55.9"),
                 ("3.18","68.4"),("3.54","62.1"),("3.31","66.3"),
@@ -2965,22 +2991,7 @@ class DoEApp(QMainWindow):
              "Program openpyxl kutuphanesine ihtiyac duyar. Bu kütüphane .exe içine gömülmüştür. "
              "Hata aliyorsaniz farklı bir kayıt klasörü deneyin."),
         
-            ("PDF'te Türkçe karakterler bozuk görünüyor.",
-             "Program öncelikle Windows sistem fontlarını (Arial, Tahoma, Calibri) kullanır. "
-             "Bu fontların Türkçe karakterleri desteklemesi gerekir. Sorun devam ediyorsa "
-             "DejaVuSans.ttf dosyasini .exe ile ayni klasore koyun."),
-        
-            ("Response Surface grafiği çok uzun sürüyor.",
-             "40x40 nokta matrisi hesaplanır (1600 tahmin). Bu normal sürede tamamlanır. "
-             "Hesaplama arka planda çalışır, buton 'Hesaplaniyor...' olur - "
-             "program donmamıştır, bekleyin."),
-        
-            ("NGI-CITDAS programıyla nasıl kullanırım?",
-             "NGI-CITDAS programındaki 'DoE'ye Gönder' butonu, mevcut seri sonuclarini "
-             "JSON dosyasina kaydeder. DoE Analyzer'da bu JSON'u import edip "
-             "yanıt değerlerini otomatik doldurabilirsiniz."),
         ]
-        
         for soru, cevap in sorular:
             block = [
                 H(1, soru),
@@ -2988,8 +2999,7 @@ class DoEApp(QMainWindow):
                 SP(0.2),
             ]
             story.append(KeepTogether(block))
-        
-        story.append(PageBreak())
+
         
         # Son sayfa
         story.append(SP(2))
@@ -3003,10 +3013,6 @@ class DoEApp(QMainWindow):
             "Bu program Ph.Eur. 2.9.18, USP <601> ve ICH Q8 kılavuzlarıyla "
             "uyumlu DoE metodolojisi kullanmaktadır."
         ))
-
-        story.insert(0, Paragraph(
-            f"[Font: TR={TR}, TRB={TRB}]", debug_style))
-        story.insert(1, SP(0.1))
 
         try:
             doc.build(story)
