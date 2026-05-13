@@ -1488,6 +1488,9 @@ class Tab4_Surface(QWidget):
         try:
             self.fig_surf.clear()
             self.canvas_surf.draw()
+            # Sinyalleri blokla — combo doldurulurken _update_fixed tetiklenmesin
+            for w in [self.combo_resp, self.combo_x, self.combo_y]:
+                w.blockSignals(True)
             self.combo_resp.clear()
             self.combo_x.clear()
             self.combo_y.clear()
@@ -1500,50 +1503,54 @@ class Tab4_Surface(QWidget):
                     self.combo_y.addItem(f["name"])
             if self.combo_y.count() > 1:
                 self.combo_y.setCurrentIndex(1)
+            # Sinyalleri tekrar aç
+            for w in [self.combo_resp, self.combo_x, self.combo_y]:
+                w.blockSignals(False)
             self._update_fixed()
         except Exception as e:
             print(f"Tab4 refresh error: {e}")
 
     def _update_fixed(self):
-        fl = self.fixed_card.layout()
-        # Tüm eski grup widgetlarını temizle
-        while fl.count() > 2:
-            item = fl.takeAt(1)
-            if item and item.widget():
-                item.widget().setParent(None)
-        self.fixed_widgets.clear()
-        # X ve Y combo'larını güncelle — seçili değerleri al
-        x_name = self.combo_x.currentText()
-        y_name = self.combo_y.currentText()
-        # X ve Y combo'larında birbirini exclude et
-        x_idx = self.combo_x.currentIndex()
-        y_idx = self.combo_y.currentIndex()
-        if x_name == y_name:
-            # Çakışma varsa Y'yi bir sonrakine al
-            new_y = (y_idx + 1) % self.combo_y.count()
-            self.combo_y.blockSignals(True)
-            self.combo_y.setCurrentIndex(new_y)
-            self.combo_y.blockSignals(False)
+        try:
+            fl = self.fixed_card.layout()
+            if fl is None: return
+            # Tüm eski grup widgetlarını temizle
+            while fl.count() > 2:
+                item = fl.takeAt(1)
+                if item and item.widget():
+                    item.widget().setParent(None)
+            self.fixed_widgets.clear()
+            # X ve Y combo değerlerini al
+            x_name = self.combo_x.currentText()
             y_name = self.combo_y.currentText()
-        # X ve Y dışındaki faktörleri sabit olarak göster
-        added = set()
-        for f in self.project.factors:
-            if f["name"] in [x_name, y_name]: continue
-            if f["type"] != "continuous": continue
-            if f["name"] in added: continue
-            added.add(f["name"])
-            mid = f.get("mid", (f["low"] + f["high"]) / 2)
-            grp = QWidget(); grp.setStyleSheet("background:transparent;")
-            gl = QHBoxLayout(grp)
-            gl.setContentsMargins(0,0,0,0); gl.setSpacing(4)
-            gl.addWidget(QLabel(f["name"] + ":"))
-            sp = QDoubleSpinBox()
-            sp.setRange(f["low"], f["high"])
-            sp.setValue(mid)
-            sp.setDecimals(3); sp.setFixedWidth(90)
-            gl.addWidget(sp)
-            self.fixed_widgets[f["name"]] = sp
-            fl.insertWidget(fl.count() - 1, grp)
+            if x_name == y_name:
+                new_y = (self.combo_y.currentIndex() + 1) % max(self.combo_y.count(), 1)
+                self.combo_y.blockSignals(True)
+                self.combo_y.setCurrentIndex(new_y)
+                self.combo_y.blockSignals(False)
+                y_name = self.combo_y.currentText()
+            # X ve Y dışındaki faktörleri sabit olarak göster
+            added = set()
+            for f in self.project.factors:
+                if f["name"] in [x_name, y_name]: continue
+                if f["type"] != "continuous": continue
+                if f["name"] in added: continue
+                added.add(f["name"])
+                mid = f.get("mid", (f["low"] + f["high"]) / 2)
+                grp = QWidget(); grp.setStyleSheet("background:transparent;")
+                gl = QHBoxLayout(grp)
+                gl.setContentsMargins(0,0,0,0); gl.setSpacing(4)
+                gl.addWidget(QLabel(f["name"] + ":"))
+                sp = QDoubleSpinBox()
+                sp.setRange(f["low"], f["high"])
+                sp.setValue(mid)
+                sp.setDecimals(3); sp.setFixedWidth(90)
+                gl.addWidget(sp)
+                self.fixed_widgets[f["name"]] = sp
+                fl.insertWidget(fl.count() - 1, grp)
+        except Exception as e:
+            print(f"_update_fixed error: {e}")
+
 
     def _plot(self):
         resp_key = self.combo_resp.currentData()
